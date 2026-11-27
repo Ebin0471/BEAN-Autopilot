@@ -37,15 +37,15 @@ describe("Central Autopilot Chat", () => {
     expect(screen.getByText(/Auto-route/)).toBeInTheDocument();
   });
 
-  it("does not fabricate an AI reply: sending adds a user message and a demo notice", () => {
+  it("does not fabricate an AI reply: without a session it requires sign-in and stays silent", () => {
     wrap(<ChatPage />);
+    // No authenticated session in the test environment: the composer is
+    // disabled and a sign-in notice is shown. No assistant reply is fabricated.
+    expect(screen.getByText(/Sign in to/i)).toBeInTheDocument();
     const textarea = screen.getByLabelText("Message");
     fireEvent.change(textarea, { target: { value: "Plan my week" } });
-    fireEvent.click(screen.getByRole("button", { name: /Send/i }));
-
-    const userMsg = screen.getByText("Plan my week");
-    expect(userMsg).toBeInTheDocument();
-    expect(screen.getByText(/Demo mode — no agent execution is connected/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Send/i })).toBeDisabled();
+    expect(screen.queryByText(/test-provider/i)).not.toBeInTheDocument();
   });
 
   it("keeps the send button disabled when the draft is empty", () => {

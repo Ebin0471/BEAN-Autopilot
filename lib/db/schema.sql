@@ -254,3 +254,163 @@ CREATE TABLE IF NOT EXISTS command_executions (
 CREATE INDEX IF NOT EXISTS idx_exec_workspace ON command_executions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_exec_status ON command_executions(status);
 
+
+-- ============================================================
+-- CORE-03 — AI INTELLIGENCE LAYER
+-- Provider-neutral AI: providers, models, conversations,
+-- messages, plans, agent tasks and usage. No provider secrets
+-- are stored in ordinary records; credentials are referenced.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS ai_providers (
+  id                TEXT PRIMARY KEY,
+  provider_id       TEXT NOT NULL UNIQUE,
+  provider_name     TEXT NOT NULL,
+  version           TEXT NOT NULL,
+  adapter_type      TEXT NOT NULL,            -- native | openai-compatible | local | test
+  endpoint_ref      TEXT,                      -- reference to config, never a secret
+  auth_ref          TEXT,                      -- reference to credential config, never a secret
+  supported_modalities TEXT NOT NULL DEFAULT '[]',  -- JSON array
+  streaming_supported INTEGER NOT NULL DEFAULT 0,
+  structured_output_supported INTEGER NOT NULL DEFAULT 0,
+  tool_call_supported INTEGER NOT NULL DEFAULT 0,
+  context_window    INTEGER,
+  rate_limit_json   TEXT,                      -- JSON metadata
+  privacy_class     TEXT NOT NULL DEFAULT 'INTERNAL', -- INTERNAL | LOCAL | EXTERNAL
+  availability_status TEXT NOT NULL DEFAULT 'PLANNED', -- PLANNED|REGISTERED|CONFIGURATION_REQUIRED|AVAILABLE|DEGRADED|UNAVAILABLE|DISABLED|REVOKED
+  health_status     TEXT NOT NULL DEFAULT 'UNKNOWN',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_providers_status ON ai_providers(availability_status);
+
+CREATE TABLE IF NOT EXISTS ai_models (
+  id                TEXT PRIMARY KEY,
+  model_id          TEXT NOT NULL UNIQUE,
+  provider_id       TEXT NOT NULL REFERENCES ai_providers(provider_id) ON DELETE CASCADE,
+  model_name        TEXT NOT NULL,
+  model_version     TEXT NOT NULL,
+  supported_tasks   TEXT NOT NULL DEFAULT '[]',   -- JSON array of task categories
+  supported_modalities TEXT NOT NULL DEFAULT '[]',
+  max_context_tokens INTEGER,
+  max_output_tokens  INTEGER,
+  structured_output INTEGER NOT NULL DEFAULT 0,
+  tool_call         INTEGER NOT NULL DEFAULT 0,
+  streaming         INTEGER NOT NULL DEFAULT 0,
+  reasoning         INTEGER NOT NULL DEFAULT 0,
+  latency_metadata  TEXT,
+  cost_metadata     TEXT,
+  privacy_class     TEXT NOT NULL DEFAULT 'INTERNAL',
+  status            TEXT NOT NULL DEFAULT 'REGISTERED', -- REGISTERED | AVAILABLE | DISABLED
+  availability_evidence TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_models_provider ON ai_models(provider_id);
+CREATE INDEX IF NOT EXISTS idx_ai_models_status ON ai_models(status);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id                TEXT PRIMARY KEY,
+  workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title             TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'ACTIVE', -- ACTIVE | ARCHIVED | DELETED
+  selected_model_id TEXT,
+  selected_provider_id TEXT,
+  routing_mode      TEXT NOT NULL DEFAULT 'AUTO',   -- AUTO | MANUAL
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE (workspace_id, user_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace_id, user_id);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id                TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role              TEXT NOT NULL CHECK (role IN ('user','assistant','system','tool')),
+  content           TEXT NOT NULL,
+  content_json      TEXT,                          -- structured payload (plan, tool calls, etc.)
+  model_id          TEXT,
+  provider_id       TEXT,
+  token_usage_json  TEXT,                          -- JSON {input,output,cached}
+  status            TEXT NOT NULL DEFAULT 'COMPLETED', -- PENDING|STREAMING|COMPLETED|FAILED|CANCELLED
+  error_code        TEXT,
+  created_at        TEXT NOT NULL,
+  seq               INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, seq);
+
+CREATE TABLE IF NOT EXISTS plans (
+  id                TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  objective         TEXT NOT NULL,
+  plan_json         TEXT NOT NULL,                 -- full structured plan
+  risk_class        TEXT NOT NULL DEFAULT 'R1',
+  status            TEXT NOT NULL DEFAULT 'PROPOSED', -- PROPOSED|VALIDATED|AWAITING_APPROVAL|APPROVED|EXECUTING|COMPLETED|VERIFIED|FAILED|PARTIAL
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plans_conversation ON plans(conversation_id);
+
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  id                TEXT PRIMARY KEY,
+  plan_id           TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+  workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  parent_task_id    TEXT,
+  agent_id          TEXT NOT NULL,
+  objective         TEXT NOT NULL,
+  allowed_commands  TEXT NOT NULL DEFAULT '[]',    -- JSON array
+  permission_scope  TEXT NOT NULL DEFAULT '[]',    -- JSON array
+  risk_ceiling      TEXT NOT NULL DEFAULT 'R2',
+  status            TEXT NOT NULL DEFAULT 'QUEUED', -- QUEUED|RUNNING|AWAITING_APPROVAL|COMPLETED|FAILED|CANCELLED
+  result_json       TEXT,
+  depth             INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_plan ON agent_tasks(plan_id);
+
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id                TEXT PRIMARY KEY,
+  workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider_id       TEXT,
+  model_id          TEXT,
+  input_tokens      INTEGER NOT NULL DEFAULT 0,
+  output_tokens     INTEGER NOT NULL DEFAULT 0,
+  cached_tokens     INTEGER NOT NULL DEFAULT 0,
+  latency_ms        INTEGER,
+  request_count     INTEGER NOT NULL DEFAULT 1,
+  failure_count     INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_json TEXT,
+  conversation_id   TEXT,
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_workspace ON ai_usage(workspace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agents (
+  id                TEXT PRIMARY KEY,
+  agent_id          TEXT NOT NULL UNIQUE,
+  name              TEXT NOT NULL,
+  version           TEXT NOT NULL,
+  description       TEXT NOT NULL,
+  category          TEXT NOT NULL,
+  supported_workspace_types TEXT NOT NULL DEFAULT '[]',
+  allowed_command_ids TEXT NOT NULL DEFAULT '[]',
+  required_permissions TEXT NOT NULL DEFAULT '[]',
+  required_capabilities TEXT NOT NULL DEFAULT '[]',
+  input_schema      TEXT NOT NULL DEFAULT '{}',
+  output_schema     TEXT NOT NULL DEFAULT '{}',
+  risk_constraints  TEXT NOT NULL DEFAULT '[]',
+  delegation_policy TEXT NOT NULL DEFAULT 'NONE',
+  maximum_steps     INTEGER NOT NULL DEFAULT 1,
+  timeout_seconds   INTEGER NOT NULL DEFAULT 60,
+  token_budget      INTEGER,
+  verification_requirements TEXT NOT NULL DEFAULT '[]',
+  escalation_rules  TEXT NOT NULL DEFAULT '[]',
+  status            TEXT NOT NULL DEFAULT 'DRAFT',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);

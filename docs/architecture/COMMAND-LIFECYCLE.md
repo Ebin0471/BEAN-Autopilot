@@ -41,10 +41,18 @@ record unchanged — a record cannot jump from `RECEIVED` to `RUNNING`, re-enter
 
 ## Idempotency and retry safety
 
-- `findByIdempotency(idempotencyKey, workspaceId)` returns the existing record
-  for a replayed key.
+- Idempotency is scoped to **(workspace, key) AND the complete canonical request
+  hash** (`params_hash`). `create()` compares the canonical payload before
+  returning an existing record.
+- The same key reused for a **different** canonical payload (command, args,
+  capability, target, version or execution options) raises
+  `IdempotencyConflictError` — the unrelated prior record is never returned.
 - A **terminal** record short-circuits: `submit()` for a key that already
   reached a terminal state returns the stored outcome instead of re-executing.
+- Concurrent duplicate inserts are reconciled via the
+  `(workspace_id, idempotency_key)` UNIQUE constraint: the loser re-reads and
+  returns the winner`s record (same payload) or raises a conflict (different
+  payload).
 - `preview()` never creates a record, so dry-runs are never retried.
 
 ## Adapter interface

@@ -28,6 +28,23 @@ export class CanonicalisationError extends Error {
 }
 
 /**
+ * Raised when an idempotency key is reused for a DIFFERENT canonical request
+ * (different command, arguments, capability, target, version or execution
+ * options) within the same workspace. The existing execution/passport belongs
+ * to a different request and must never be returned for it.
+ */
+export class IdempotencyConflictError extends Error {
+  constructor(
+    message: string,
+    public readonly workspaceId: string,
+    public readonly idempotencyKey: string,
+  ) {
+    super(message);
+    this.name = "IdempotencyConflictError";
+  }
+}
+
+/**
  * Produce a deterministic JSON string for arbitrary validated data.
  * - Object keys are sorted recursively (stable ordering).
  * - Array order is preserved (meaningful ordering).
