@@ -14,6 +14,17 @@ import { CommandRegistry } from "@/lib/commands/registry";
 import { CapabilityRegistry } from "@/lib/commands/capability";
 import { ExecutionLifecycleManager } from "@/lib/commands/lifecycle";
 import { CommandGateway } from "@/lib/commands/gateway";
+// CORE-03 AI intelligence layer
+import { ProviderRegistry } from "@/lib/ai/provider-registry";
+import { ModelRegistry } from "@/lib/ai/model-registry";
+import { ModelRouter } from "@/lib/ai/routing";
+import { ConversationService } from "@/lib/ai/conversation";
+import { IntentEngine } from "@/lib/ai/intent";
+import { ContextAssembler } from "@/lib/ai/context";
+import { PlanningEngine } from "@/lib/ai/planning";
+import { AgentRegistry } from "@/lib/ai/agents";
+import { AgentOrchestrator } from "@/lib/ai/orchestrator";
+import { registerDefaultAIProviders } from "@/lib/ai/bootstrap";
 
 export interface Services {
   db: Db;
@@ -31,6 +42,16 @@ export interface Services {
   capabilities: CapabilityRegistry;
   lifecycle: ExecutionLifecycleManager;
   gateway: CommandGateway;
+  // CORE-03 AI intelligence layer
+  aiProviders: ProviderRegistry;
+  aiModels: ModelRegistry;
+  aiRouter: ModelRouter;
+  conversations: ConversationService;
+  intent: IntentEngine;
+  context: ContextAssembler;
+  planner: PlanningEngine;
+  agents: AgentRegistry;
+  orchestrator: AgentOrchestrator;
 }
 
 /** Wire all services around a single database connection. */
@@ -49,7 +70,45 @@ export function createServices(db: Db): Services {
   const capabilities = new CapabilityRegistry(db);
   const lifecycle = new ExecutionLifecycleManager(db, audit);
   const gateway = new CommandGateway(db, policy, risk, passport, audit, commands, capabilities, lifecycle);
-  return { db, audit, identity, session, workspace, permissions, policy, risk, passport, approval, commands, capabilities, lifecycle, gateway };
+
+  // CORE-03 AI intelligence layer.
+  const aiProviders = new ProviderRegistry(db);
+  const aiModels = new ModelRegistry(db);
+  const aiRouter = new ModelRouter(aiProviders, aiModels);
+  const conversations = new ConversationService(db, audit);
+  const intent = new IntentEngine(aiRouter, aiProviders, aiModels);
+  const context = new ContextAssembler(db, policy, commands, capabilities, aiModels);
+  const planner = new PlanningEngine(db, aiRouter, aiProviders, aiModels, commands, capabilities, policy, risk);
+  const agents = new AgentRegistry(db, commands, policy);
+  const orchestrator = new AgentOrchestrator(db, audit, gateway, commands, capabilities, agents, planner, aiRouter, aiProviders, aiModels, conversations, intent, context, policy);
+
+  registerDefaultAIProviders(aiProviders, aiModels, agents);
+
+  return {
+    db,
+    audit,
+    identity,
+    session,
+    workspace,
+    permissions,
+    policy,
+    risk,
+    passport,
+    approval,
+    commands,
+    capabilities,
+    lifecycle,
+    gateway,
+    aiProviders,
+    aiModels,
+    aiRouter,
+    conversations,
+    intent,
+    context,
+    planner,
+    agents,
+    orchestrator,
+  };
 }
 
 /** Application-wide services using the default database. */
