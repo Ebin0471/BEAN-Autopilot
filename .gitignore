@@ -25,6 +25,9 @@ yarn-error.log*
 /coverage
 .vitest
 
+# local runtime database (CORE-01 node:sqlite dev/test store)
+/.bean/
+
 # typescript incremental build
 *.tsbuildinfo
 
