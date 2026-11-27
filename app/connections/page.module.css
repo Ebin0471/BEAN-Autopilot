@@ -1,0 +1,27 @@
+.mt {
+  margin-top: 22px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+.iconBox {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--gold);
+}
+.name {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 14px 0 4px;
+}
+.attempt {
+  font-size: 11px;
+  margin: 8px 0 0;
+}

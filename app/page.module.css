@@ -1,0 +1,183 @@
+.mt {
+  margin-top: 22px;
+}
+
+.heroComposer {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+}
+.composer .textarea {
+  min-height: 120px;
+}
+.composerActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  gap: 12px;
+}
+
+.quickAccess {
+  display: flex;
+}
+.qaCard {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border);
+  background: linear-gradient(160deg, var(--gold-soft), var(--glass));
+  color: var(--text);
+  transition: border-color var(--t-fast), transform var(--t-fast);
+}
+.qaCard:hover {
+  border-color: var(--gold-line);
+  transform: translateY(-2px);
+}
+.qaCard svg {
+  color: var(--gold);
+  flex-shrink: 0;
+}
+.qaCard strong {
+  display: block;
+  font-size: 14px;
+}
+.qaCard span {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.qaArrow {
+  margin-left: auto;
+  color: var(--gold);
+  flex-shrink: 0;
+}
+
+.actionList,
+.taskList,
+.approvalList,
+.activityList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.actionLink {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  font-size: 13.5px;
+  color: var(--text);
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.actionLink:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border);
+}
+.actionBullet {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gold);
+  flex-shrink: 0;
+}
+.actionArrow {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+
+.taskRow,
+.approvalRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.taskRow:last-child,
+.approvalRow:last-child {
+  border-bottom: 0;
+}
+.taskInfo,
+.approvalInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.taskInfo strong,
+.approvalInfo strong {
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.agentBars {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agentBarRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  margin-bottom: 6px;
+}
+.bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.barFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold-deep), var(--gold-bright));
+  opacity: 0.55;
+}
+.mini {
+  font-size: 11.5px;
+  margin-top: 14px;
+}
+
+.activityRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.activityRow:last-child {
+  border-bottom: 0;
+}
+.activityInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.activityInfo strong {
+  font-size: 13px;
+  font-weight: 550;
+}
+
+@media (max-width: 860px) {
+  .heroComposer {
+    grid-template-columns: 1fr;
+  }
+}
