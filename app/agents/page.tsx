@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { PageHeader, DemoNote } from "@/components/PageHeader";
 import { Icon } from "@/components/Icon";
 import { AGENTS } from "@/lib/data";
+import { COMMAND_CATALOGUE } from "@/lib/commands/catalogue";
 import type { Agent, AgentStatus } from "@/lib/types";
 import styles from "./page.module.css";
 
@@ -59,9 +60,10 @@ export default function AgentsPage() {
       />
 
       <DemoNote>
-        All {AGENTS.length} shown agents are <strong>planned</strong>. Capabilities, permissions and
-        approval rules are placeholders until the versioned agent contracts are imported. No agent is
-        configured, available or active in UI-01.
+        All {AGENTS.length} shown agents are <strong>planned</strong>. CORE-02 provides the real registered
+        command catalogue ({COMMAND_CATALOGUE.length} commands) and capability fabric that agents will eventually
+        use, but no agent runtime exists. No agent is configured, available or active — agents become available
+        only with registration and health evidence in a later milestone.
       </DemoNote>
 
       <div className={styles.toolbar}>

@@ -5,6 +5,7 @@ import { PageHeader, DemoNote } from "@/components/PageHeader";
 import { Icon } from "@/components/Icon";
 import { useWorkspace } from "@/lib/workspace";
 import { AGENTS } from "@/lib/data";
+import { COMMAND_CATALOGUE } from "@/lib/commands/catalogue";
 import type { ChatMessage } from "@/lib/types";
 import styles from "./page.module.css";
 
@@ -14,7 +15,7 @@ const INITIAL_MESSAGES: ChatMessage[] = [
   {
     id: "m0",
     role: "system",
-    text: "Describe an outcome in plain language. I’ll plan the work, request approval for anything consequential, execute only registered commands, and verify the real result before reporting. (UI-01 demo — execution is not connected yet.)",
+    text: `Describe an outcome in plain language. CORE-02 provides a registered command catalogue (${COMMAND_CATALOGUE.length} commands) and a governed command gateway. Real agent reasoning and execution belong to CORE-03 and later — this UI does not fabricate a plan or execute anything.`,
     demo: true,
   },
 ];
@@ -41,7 +42,7 @@ export default function ChatPage() {
       id: `s${Date.now()}`,
       role: "system",
       demo: true,
-      text: "Demo mode — backend agent execution is not connected in UI-01. Your request is captured in the UI only; no plan, execution or receipt is produced.",
+      text: "Demo mode — no agent execution is connected. Command discovery and preview are available through the server-side command gateway (/api/commands); agent reasoning and execution are CORE-03+.",
     };
     setMessages((m) => [...m, userMsg, notice]);
     setDraft("");
