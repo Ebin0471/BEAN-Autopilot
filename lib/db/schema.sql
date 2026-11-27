@@ -273,6 +273,7 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   supported_modalities TEXT NOT NULL DEFAULT '[]',  -- JSON array
   streaming_supported INTEGER NOT NULL DEFAULT 0,
   structured_output_supported INTEGER NOT NULL DEFAULT 0,
+  structured_output_mode  TEXT NOT NULL DEFAULT 'NONE',   -- NONE | PROMPTED_JSON | NATIVE_JSON_SCHEMA
   tool_call_supported INTEGER NOT NULL DEFAULT 0,
   context_window    INTEGER,
   rate_limit_json   TEXT,                      -- JSON metadata
@@ -295,6 +296,7 @@ CREATE TABLE IF NOT EXISTS ai_models (
   max_context_tokens INTEGER,
   max_output_tokens  INTEGER,
   structured_output INTEGER NOT NULL DEFAULT 0,
+  structured_output_mode TEXT NOT NULL DEFAULT 'NONE',   -- NONE | PROMPTED_JSON | NATIVE_JSON_SCHEMA
   tool_call         INTEGER NOT NULL DEFAULT 0,
   streaming         INTEGER NOT NULL DEFAULT 0,
   reasoning         INTEGER NOT NULL DEFAULT 0,
@@ -414,3 +416,19 @@ CREATE TABLE IF NOT EXISTS agents (
   updated_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+
+
+-- CORE-03G: workspace-scoped external-AI data-processing consent.
+-- Additive. Default: external processing disabled. Only an authorised owner
+-- or a role holding the AI-consent policy permission may change it.
+CREATE TABLE IF NOT EXISTS workspace_ai_consent (
+  workspace_id            TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+  external_ai_allowed     INTEGER NOT NULL DEFAULT 0,
+  allowed_external_provider_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of provider ids
+  consent_version         TEXT NOT NULL DEFAULT '1',
+  consented_by            TEXT,
+  consented_at            TEXT,
+  updated_at              TEXT NOT NULL,
+  created_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_ai_consent_workspace ON workspace_ai_consent(workspace_id);

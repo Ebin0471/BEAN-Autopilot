@@ -13,10 +13,12 @@ import type { ModelRegistry } from "./model-registry";
 import type { ConversationService } from "./conversation";
 import type { IntentEngine } from "./intent";
 import type { ContextAssembler } from "./context";
+import { assertProviderAllowed, ConsentError } from "./consent";
 import type {
   AgentResult,
   DelegationEnvelope,
   Intent,
+  RoutingConstraints,
   TaskPlan,
 } from "./types";
 
@@ -72,13 +74,21 @@ export class AgentOrchestrator {
    * commands that do not require approval. Consequential commands are left
    * AWAITING_APPROVAL for a human. The model never decides authorisation.
    */
-  async handleTurn(input: {
-    workspaceId: string;
-    userId: string;
-    conversationId: string;
-    message: string;
-    autoExecuteSafe?: boolean;
-  }): Promise<{
+  async handleTurn(
+    input: {
+      workspaceId: string;
+      userId: string;
+      conversationId: string;
+      message: string;
+      autoExecuteSafe?: boolean;
+    },
+    options: {
+      /** When true, the final response is streamed from the upstream provider. */
+      streamResponse?: boolean;
+      /** Receives incremental response deltas as they stream. */
+      onResponseDelta?: (delta: string) => void;
+    } = {},
+  ): Promise<{
     intent: Intent;
     plan: TaskPlan;
     executions: CommandOutcome[];
@@ -148,8 +158,21 @@ export class AgentOrchestrator {
         ? "PARTIAL"
         : "PROPOSED";
 
-    // 6. Produce an evidence-backed response.
-    const response = this.composeResponse(intent, plan, executions, limitations);
+    // 6. Produce a REAL, model-generated, evidence-backed response. The model
+    //    is given the actual intent/plan/executions/limitations as grounding
+    //    context; it never invents results. If no model is available (or the
+    //    model fails), we fall back to the honest template response — never a
+    //    fabricated model output.
+    const response = await this.composeModelResponse({
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      intent,
+      plan,
+      executions,
+      limitations,
+      streamResponse: options.streamResponse,
+      onResponseDelta: options.onResponseDelta,
+    });
 
     this.planner.updateStatus(plan.planId, status as TaskPlan["status"]);
 
@@ -354,6 +377,147 @@ export class AgentOrchestrator {
     return lines.join("\n");
   }
 
+  /**
+   * Generate the final natural-language response with a real AI model.
+   *
+   * The model is given the ground-truth turn state (intent, plan, verified
+   * executions, limitations) as context so it can summarise honestly. The
+   * model output is UNTRUSTED text: it is used as the response surface only and
+   * never re-introduced into command execution, plan mutation, or approval
+   * decisions. Before calling an EXTERNAL provider, workspace external-AI
+   * consent is enforced server-side (fail-closed). If no model is available
+   * or the model call fails, the honest template response is returned instead.
+   */
+  private async composeModelResponse(input: {
+    workspaceId: string;
+    userId: string;
+    intent: Intent;
+    plan: TaskPlan;
+    executions: CommandOutcome[];
+    limitations: string[];
+    streamResponse?: boolean;
+    onResponseDelta?: (delta: string) => void;
+  }): Promise<string> {
+    const constraints: RoutingConstraints = {
+      taskCategory: "GENERAL_CHAT",
+      requiredModalities: ["text"],
+      requireStructuredOutput: false,
+      requireToolCall: false,
+      requireReasoning: false,
+    };
+
+    let decision;
+    try {
+      decision = this.router.route(constraints);
+    } catch {
+      return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+    }
+
+    // Consent enforcement: external providers require workspace consent.
+    try {
+      assertProviderAllowed(this.db, input.workspaceId, decision.provider.privacyClass, decision.providerId);
+    } catch (e) {
+      if (e instanceof ConsentError) {
+        input.limitations.push(e.message);
+        return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+      }
+      throw e;
+    }
+
+    const adapter = this.providers.adapterFor(decision.providerId);
+    if (!adapter) {
+      return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+    }
+
+    const verified = input.executions.filter((e) => e.status === "VERIFIED");
+    const blocked = input.executions.filter((e) => e.status === "BLOCKED");
+    const evidence = verified.length
+      ? verified.map((e) => `- ${e.commandId}: ${e.status}`).join("\n")
+      : "(no commands executed this turn)";
+    const blocking = blocked.length
+      ? blocked.map((e) => `- ${e.commandId}: ${e.status}`).join("\n")
+      : "";
+
+    const promptLines = [
+      `You are BEAN Autopilot, a governed autonomous assistant. Summarise the result for the user honestly, in the same language they used.`,
+      `Desired outcome: ${input.intent.desiredOutcome}`,
+      `Plan steps (${input.plan.tasks.length}): ${input.plan.tasks.map((t) => t.description).join(" | ") || "none"}`,
+      "Executed commands (verified):",
+      evidence,
+      blocking ? "Blocked commands:" + "\n" + blocking : "",
+      input.plan.approvalRequirements.length
+        ? `Awaiting human approval for: ${input.plan.approvalRequirements.join("; ")}`
+        : "",
+      input.limitations.length ? `Limitations: ${input.limitations.join("; ")}` : "",
+      "Do not invent results that were not executed. If nothing was executed, say so plainly.",
+    ].filter((line) => line !== "");
+    const prompt = promptLines.join("\n");
+
+    try {
+      // Bounded fallback: once a stream delta has been emitted, we do NOT
+      // fall back to a different provider or the template (that would emit
+      // contradictory content). Fallback is only possible before the first
+      // delta.
+      if (input.streamResponse) {
+        let streamed = false;
+        let content = "";
+        let streamError: string | null = null;
+        // The streaming branch is self-contained: if the stream throws AFTER
+        // deltas were emitted, we must NOT fall back to the template.
+        try {
+          for await (const event of adapter.stream({
+            requestId: uuid(),
+            modelId: decision.modelId,
+            messages: [{ role: "user", content: prompt }],
+            taskCategory: "GENERAL_CHAT",
+          })) {
+            if (event.type === "delta" && event.delta) {
+              streamed = true;
+              content += event.delta;
+              input.onResponseDelta?.(event.delta);
+            } else if (event.type === "complete") {
+              if (event.content) content = event.content;
+              break;
+            } else if (event.type === "error") {
+              streamError = event.error?.message ?? "Model stream failed.";
+              break;
+            } else if (event.type === "cancelled") {
+              break;
+            }
+          }
+        } catch (e) {
+          streamError = e instanceof Error ? e.message : "Model stream failed.";
+        }
+
+        if (streamError && streamed) {
+          // Already streamed deltas: NO fallback. Surface partial content
+          // honestly; the error is reported via the caller limitations.
+          input.limitations.push(`Model stream ended early: ${streamError}`);
+          return content;
+        }
+        if (streamed && content.trim() !== "") return content;
+        if (!streamed) {
+          // Nothing streamed yet: honest template fallback is safe.
+          return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+        }
+        return content;
+      }
+
+      const response = await adapter.generate({
+        requestId: uuid(),
+        modelId: decision.modelId,
+        messages: [{ role: "user", content: prompt }],
+        taskCategory: "GENERAL_CHAT",
+      });
+
+      if (response.error || !response.content || response.content.trim() === "") {
+        return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+      }
+      return response.content;
+    } catch {
+      return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+    }
+  }
   private workspaceType(workspaceId: string): string {
     const row = this.db
       .prepare("SELECT kind FROM workspaces WHERE id = ?")

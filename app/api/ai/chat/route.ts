@@ -2,6 +2,7 @@ import { getServices } from "@/lib/security/container";
 import { error, requireAuth, unauthorized } from "@/lib/api/http";
 import { z } from "zod";
 import type { CommandOutcome } from "@/lib/commands/gateway";
+import { ConsentError } from "@/lib/ai/consent";
 
 export const dynamic = "force-dynamic";
 
@@ -17,15 +18,20 @@ const ChatSchema = z.object({
  *
  * The orchestrator understands intent, assembles context, proposes a plan and
  * executes only permitted, approval-free commands through the CORE-02 gateway.
- * The response is streamed as newline-delimited JSON events:
+ * The final assistant response is streamed TRUE from the upstream AI provider's
+ * SSE stream (when a real provider is configured); otherwise the honest
+ * template response is streamed. The response is streamed as newline-delimited
+ * JSON events:
  *   - meta:       turn metadata (intent task category, status)
- *   - delta:      incremental assistant text
+ *   - delta:      incremental assistant text (true upstream streaming)
  *   - plan:       the structured proposed plan
  *   - execution:  a command execution receipt (governed)
  *   - complete:   final usage + status
  *   - error:      honest failure
  *
  * No provider credentials reach the browser; no chain-of-thought is exposed.
+ * External-AI workspace consent is enforced server-side before any external
+ * provider is used (fail-closed).
  */
 export async function POST(req: Request) {
   const services = getServices();
@@ -49,6 +55,11 @@ export async function POST(req: Request) {
   );
   if (!conversation) return error("Conversation not found", 404);
 
+  // External-AI consent is enforced inside the orchestrator, per-provider,
+  // before any EXTERNAL provider is called (fail-closed). A purely-internal
+  // turn is never blocked by this; an external turn without consent is honestly
+  // reported as a limitation rather than silently failing.
+
   // Persist the user message.
   services.conversations.appendMessage({
     conversationId: body.conversationId,
@@ -67,13 +78,20 @@ export async function POST(req: Request) {
       };
 
       try {
-        const turn = await services.orchestrator.handleTurn({
-          workspaceId: body.workspaceId,
-          userId: auth.userId,
-          conversationId: body.conversationId,
-          message: body.message,
-          autoExecuteSafe: body.autoExecuteSafe,
-        });
+        const turn = await services.orchestrator.handleTurn(
+          {
+            workspaceId: body.workspaceId,
+            userId: auth.userId,
+            conversationId: body.conversationId,
+            message: body.message,
+            autoExecuteSafe: body.autoExecuteSafe,
+          },
+          {
+            // TRUE upstream streaming: relay provider deltas as they arrive.
+            streamResponse: true,
+            onResponseDelta: (delta: string) => send({ type: "delta", delta }),
+          },
+        );
 
         send({
           type: "meta",
@@ -82,12 +100,6 @@ export async function POST(req: Request) {
           requiresClarification: turn.intent.requiresClarification,
           missingInformation: turn.intent.missingInformation,
         });
-
-        // Stream the assistant text in chunks.
-        const words = turn.response.split(/(\s+)/);
-        for (const chunk of words) {
-          if (chunk) send({ type: "delta", delta: chunk });
-        }
 
         send({ type: "plan", plan: turn.plan });
 
@@ -122,16 +134,29 @@ export async function POST(req: Request) {
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Chat turn failed";
         const code = (e as { code?: string }).code ?? "CHAT_ERROR";
-        services.conversations.appendMessage({
-          conversationId: body.conversationId,
-          workspaceId: body.workspaceId,
-          userId: auth.userId,
-          role: "assistant",
-          content: `I could not complete this turn: ${msg}`,
-          status: "FAILED",
-          errorCode: code,
-        });
-        send({ type: "error", code, message: msg });
+        if (e instanceof ConsentError) {
+          services.conversations.appendMessage({
+            conversationId: body.conversationId,
+            workspaceId: body.workspaceId,
+            userId: auth.userId,
+            role: "assistant",
+            content: `I could not complete this turn: ${msg}`,
+            status: "FAILED",
+            errorCode: code,
+          });
+          send({ type: "error", code, message: msg });
+        } else {
+          services.conversations.appendMessage({
+            conversationId: body.conversationId,
+            workspaceId: body.workspaceId,
+            userId: auth.userId,
+            role: "assistant",
+            content: `I could not complete this turn: ${msg}`,
+            status: "FAILED",
+            errorCode: code,
+          });
+          send({ type: "error", code, message: msg });
+        }
       } finally {
         controller.close();
       }

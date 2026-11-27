@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type SqliteDb } from "./sqlite-shim";
+import { runMigrations } from "./migrations";
 
 // Resolve the schema relative to the project root. `process.cwd()` is reliable
 // in both `next dev` and `next start`, whereas `import.meta.url` is mis-bundled
@@ -19,6 +20,7 @@ export function initDb(location: string): Db {
   }
   const database = new DatabaseSync(location, { enableForeignKeyConstraints: true });
   database.exec(SCHEMA);
+  runMigrations(database);
   return database;
 }
 
