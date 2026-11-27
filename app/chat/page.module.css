@@ -1,0 +1,302 @@
+.layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 320px;
+  gap: 18px;
+  align-items: start;
+}
+
+/* history */
+.history {
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.convList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.convItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--glass);
+  color: var(--text-muted);
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+.convItem:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.convItem svg {
+  color: var(--gold);
+  flex-shrink: 0;
+}
+.convInfo {
+  display: flex;
+  flex-direction: column;
+}
+.convInfo strong {
+  font-size: 13px;
+  font-weight: 550;
+}
+
+/* conversation */
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, var(--glass-strong), var(--glass));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  min-height: 62vh;
+}
+
+.contextBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.agentSelect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+.agentSelect .select {
+  width: auto;
+  padding: 7px 12px;
+  font-size: 13px;
+}
+
+.messages {
+  flex: 1;
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  max-height: 52vh;
+}
+.msg {
+  max-width: 78%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.msgUser {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.msgSystem {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+.msgRole {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.msgDemo {
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  text-transform: uppercase;
+}
+.msgText {
+  margin: 0;
+  padding: 12px 15px;
+  border-radius: var(--r-md);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.msgUser .msgText {
+  background: linear-gradient(160deg, var(--gold-bright), var(--gold-deep));
+  color: #17130a;
+  border-bottom-right-radius: 4px;
+}
+.msgSystem .msgText {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-bottom-left-radius: 4px;
+}
+
+.composer {
+  border-top: 1px solid var(--border);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.composer .textarea {
+  min-height: 64px;
+}
+.composerBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.composerTools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+}
+.toolBtn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+.toolBtn:hover {
+  color: var(--gold-bright);
+  border-color: var(--gold-line);
+}
+
+/* planning */
+.planning {
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.stageList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stageItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.stageNum {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold);
+}
+.mini {
+  font-size: 11.5px;
+  margin-top: 12px;
+}
+
+.approvalCard {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+}
+.approvalCard strong {
+  font-size: 13px;
+}
+.approvalCard .badge {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.receipt {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.receipt > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+.receipt dt {
+  color: var(--text-dim);
+  margin: 0;
+}
+.receipt dd {
+  margin: 0;
+  text-align: right;
+}
+
+.sourceRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.sourceRow svg {
+  color: var(--success);
+  flex-shrink: 0;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .planning {
+    grid-column: 1 / -1;
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .history {
+    position: static;
+  }
+  .convList {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+  .convItem {
+    flex-shrink: 0;
+  }
+  .planning {
+    grid-template-columns: 1fr;
+  }
+}
