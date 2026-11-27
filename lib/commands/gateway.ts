@@ -1,5 +1,5 @@
 import type { Db } from "@/lib/db/database";
-import { computeBindingHash, canonicalBinding } from "./canonical";
+import { computeBindingHash, canonicalBinding, IdempotencyConflictError } from "./canonical";
 import { AuditService } from "@/lib/security/audit";
 import { PolicyEngine, AuthorizationError } from "@/lib/security/policy";
 import { RiskClassifier } from "@/lib/security/risk";
@@ -195,45 +195,64 @@ export class CommandGateway {
     // 7. Canonicalise the complete payload (hash + canonical string).
     const { hash: paramsHash, canonical: paramsCanonical } = this.computeBinding(actor.workspaceId, command, capabilityId, request, args);
 
-    // 8. Create / check Action Passport bound to the FULL payload.
-    const passport = this.passport.createRequest(
-      { userId: actor.userId, workspaceId: actor.workspaceId, agentId: request.agentId ?? null },
-      {
-        workspaceId: actor.workspaceId,
-        targetType: request.targetType ?? command.targetRequirements.type ?? "none",
-        targetId: request.targetId ?? "none",
-        command: command.commandId,
-        operation: command.name,
-        dataScope: actor.workspaceId,
-        permissionScope: command.requiredPermissions as Permission[],
-        riskClass,
-        paramHash: paramsHash,
-        params: args,
-        paramsCanonical,
-        idempotencyKey: request.idempotencyKey,
-        approvalPolicy: command.approvalPolicy,
-        verificationRequirements: [command.verificationContract.type],
-        agentId: request.agentId ?? null,
-      },
-    ).passport;
-
-    // 9. Execution lifecycle record (idempotent).
-    const prior = this.lifecycle.findByIdempotency(actor.workspaceId, request.idempotencyKey);
-    if (prior && isTerminalState(prior.status)) {
-      return this.outcomeFromRecord(prior, command, riskClass, capabilityId, paramsHash);
+    // 8. Create / check Action Passport bound to the FULL payload. The passport
+    //    service compares the complete canonical binding before reusing an
+    //    existing passport and raises an explicit conflict otherwise.
+    let passport;
+    try {
+      passport = this.passport.createRequest(
+        { userId: actor.userId, workspaceId: actor.workspaceId, agentId: request.agentId ?? null },
+        {
+          workspaceId: actor.workspaceId,
+          targetType: request.targetType ?? command.targetRequirements.type ?? "none",
+          targetId: request.targetId ?? "none",
+          command: command.commandId,
+          operation: command.name,
+          dataScope: actor.workspaceId,
+          permissionScope: command.requiredPermissions as Permission[],
+          riskClass,
+          paramHash: paramsHash,
+          params: args,
+          paramsCanonical,
+          idempotencyKey: request.idempotencyKey,
+          approvalPolicy: command.approvalPolicy,
+          verificationRequirements: [command.verificationContract.type],
+          agentId: request.agentId ?? null,
+        },
+      ).passport;
+    } catch (e) {
+      if (e instanceof IdempotencyConflictError) {
+        return this.conflict(actor, request, command, capabilityId, paramsHash, e);
+      }
+      throw e;
     }
-    const execution = this.lifecycle.create({
-      workspaceId: actor.workspaceId,
-      actorId: actor.userId,
-      commandId: command.commandId,
-      commandVersion: command.version,
-      capabilityId,
-      passportId: passport.id,
-      targetType: request.targetType ?? null,
-      targetId: request.targetId ?? null,
-      paramsHash,
-      idempotencyKey: request.idempotencyKey,
-    });
+
+    // 9. Execution lifecycle record. The lifecycle manager compares the
+    //    complete canonical request hash before reusing an existing execution
+    //    and raises an explicit conflict for a mismatched payload.
+    let execution;
+    try {
+      execution = this.lifecycle.create({
+        workspaceId: actor.workspaceId,
+        actorId: actor.userId,
+        commandId: command.commandId,
+        commandVersion: command.version,
+        capabilityId,
+        passportId: passport.id,
+        targetType: request.targetType ?? null,
+        targetId: request.targetId ?? null,
+        paramsHash,
+        idempotencyKey: request.idempotencyKey,
+      });
+    } catch (e) {
+      if (e instanceof IdempotencyConflictError) {
+        return this.conflict(actor, request, command, capabilityId, paramsHash, e);
+      }
+      throw e;
+    }
+    if (isTerminalState(execution.status)) {
+      return this.outcomeFromRecord(execution, command, riskClass, capabilityId, paramsHash);
+    }
 
     // 10. Check approval + execution policy.
     const approvalRequired = this.risk.policyFor(riskClass).approvalRequired || command.approvalPolicy !== "NONE";
@@ -413,18 +432,21 @@ export class CommandGateway {
 
   private computeBinding(
     workspaceId: string,
-    command: CommandDefinition,
+    command: CommandDefinition | null,
     capabilityId: string | null,
     request: CommandRequest,
     args?: Record<string, unknown>,
   ): { hash: string; canonical: string } {
+    // When the command could not be resolved (e.g. a blocked unknown command),
+    // fall back to the raw request identity so different requests still produce
+    // distinct canonical payloads.
     const fields = {
       workspaceId,
-      commandId: command.commandId,
-      commandVersion: command.version,
+      commandId: command ? command.commandId : request.commandId,
+      commandVersion: command ? command.version : (request.version ?? "0.0.0"),
       capabilityId,
       capabilityVersion: capabilityId ? "1.0.0" : null,
-      targetType: request.targetType ?? command.targetRequirements.type ?? "none",
+      targetType: request.targetType ?? (command ? command.targetRequirements.type : undefined) ?? "none",
       targetId: request.targetId ?? "none",
       args: args ?? request.args,
       executionOptions: request.executionOptions ?? {},
@@ -449,20 +471,28 @@ export class CommandGateway {
     const commandId = command?.commandId ?? request.commandId;
     const commandVersion = command?.version ?? "0.0.0";
     const capabilityId = command?.requiredCapability ?? null;
-    const paramsHash = command
-      ? this.computeBinding(actor.workspaceId, command, capabilityId, request).hash
-      : "";
-    const execution = this.lifecycle.create({
-      workspaceId: actor.workspaceId,
-      actorId: actor.userId,
-      commandId,
-      commandVersion,
-      capabilityId,
-      targetType: request.targetType ?? null,
-      targetId: request.targetId ?? null,
-      paramsHash,
-      idempotencyKey: request.idempotencyKey,
-    });
+    // Always compute a canonical binding hash (even for an unresolved command)
+    // so a reused idempotency key with a different payload is detected.
+    const paramsHash = this.computeBinding(actor.workspaceId, command, capabilityId, request).hash;
+    let execution;
+    try {
+      execution = this.lifecycle.create({
+        workspaceId: actor.workspaceId,
+        actorId: actor.userId,
+        commandId,
+        commandVersion,
+        capabilityId,
+        targetType: request.targetType ?? null,
+        targetId: request.targetId ?? null,
+        paramsHash,
+        idempotencyKey: request.idempotencyKey,
+      });
+    } catch (e) {
+      if (e instanceof IdempotencyConflictError) {
+        return this.conflict(actor, request, command, capabilityId, paramsHash, e);
+      }
+      throw e;
+    }
     this.lifecycle.transition(execution.id, "BLOCKED", { errorCode: code });
     this.audit.append({
       workspaceId: actor.workspaceId,
@@ -486,6 +516,46 @@ export class CommandGateway {
       paramsHash,
       errorCode: code,
       message,
+    };
+  }
+
+  /**
+   * Explicit idempotency-conflict outcome. The idempotency key already belongs
+   * to a DIFFERENT canonical request; the prior execution/passport is never
+   * returned. Audited as a blocked command with the conflict code.
+   */
+  private conflict(
+    actor: { userId: string; workspaceId: string },
+    request: CommandRequest,
+    command: CommandDefinition | null,
+    capabilityId: string | null,
+    paramsHash: string,
+    e: IdempotencyConflictError,
+  ): CommandOutcome {
+    const commandId = command?.commandId ?? request.commandId;
+    const commandVersion = command?.version ?? "0.0.0";
+    this.audit.append({
+      workspaceId: actor.workspaceId,
+      actorId: actor.userId,
+      actorType: "USER",
+      eventType: "COMMAND_BLOCKED",
+      targetType: "execution",
+      targetId: "idempotency",
+      result: "DENIED",
+      metadata: { commandId, code: "IDEMPOTENCY_CONFLICT", idempotencyKey: request.idempotencyKey },
+    });
+    return {
+      executionId: "",
+      commandId,
+      commandVersion,
+      status: "BLOCKED",
+      riskClass: command ? this.resolveRisk(command) : "R2",
+      capabilityId,
+      passportId: null,
+      passportStatus: null,
+      paramsHash,
+      errorCode: "IDEMPOTENCY_CONFLICT",
+      message: e.message,
     };
   }
 
@@ -520,7 +590,7 @@ export class CommandGateway {
   }
   /** Build an outcome from an existing (idempotent) execution record. */
   private outcomeFromRecord(
-    record: { id: string; status: ExecutionState; command_id: string; command_version: string; capability_id: string | null; params_hash: string },
+    record: { id: string; status: ExecutionState; command_id: string; command_version: string; capability_id: string | null; passport_id: string | null; params_hash: string },
     command: CommandDefinition,
     riskClass: RiskClass,
     capabilityId: string | null,
@@ -533,7 +603,7 @@ export class CommandGateway {
       status: record.status,
       riskClass,
       capabilityId: capabilityId ?? record.capability_id,
-      passportId: null,
+      passportId: record.passport_id ?? null,
       passportStatus: null,
       paramsHash: record.params_hash || paramsHash,
       message: "Idempotent replay of a completed execution",

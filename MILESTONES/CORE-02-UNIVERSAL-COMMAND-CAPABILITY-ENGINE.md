@@ -104,9 +104,22 @@ Invalid transitions throw `LifecycleError`. Terminal records short-circuit.
 
 ## 7. Idempotency, timeout and retry safety
 
-- `CommandGateway.submit()` accepts an `idempotencyKey`. The lifecycle manager
-  records it and `findByIdempotency()` returns the existing terminal record on
-  replay, so a retried request does not re-execute.
+- `CommandGateway.submit()` accepts an `idempotencyKey`. Idempotency is scoped
+  to **(workspace, key) AND the complete canonical request** — not just the key.
+- The same key reused for a **different** canonical payload (different command,
+  arguments, capability, target, version or execution options) is rejected with
+  an explicit `IDEMPOTENCY_CONFLICT` (`BLOCKED`); the unrelated prior
+  execution/passport is **never** returned.
+- The same key + same canonical payload safely replays the existing execution and
+  passport (same `executionId`), so a retried request does not re-execute.
+- `ActionPassportService.createRequest()` compares `param_hash` **and**
+  `params_canonical` before returning an existing passport, and
+  `ExecutionLifecycleManager.create()` compares `params_hash` before returning
+  an existing execution. Both raise `IdempotencyConflictError` on a mismatch.
+- Concurrent duplicate inserts are reconciled via the
+  `(workspace_id, idempotency_key)` UNIQUE constraint: the loser re-reads and
+  returns the winner`s record (same payload) or raises a conflict (different
+  payload), so no inconsistent passports or executions are created.
 - Terminal states (`VERIFIED`, `PARTIAL`, `FAILED`, `BLOCKED`, `CANCELLED`,
   `COMPENSATED`) are idempotent and never re-enter `RUNNING`.
 - `CommandGateway.preview()` is synchronous and **never** creates a passport or

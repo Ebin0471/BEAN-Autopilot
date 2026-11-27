@@ -58,6 +58,7 @@ gate passes.
 | `CAPABILITY_UNAVAILABLE` | Required capability not usable for the workspace. |
 | `CAPABILITY_ESCALATION` | Capability scope would exceed caller permissions. |
 | `PERMISSION_DENIED` | Caller lacks a required permission. |
+| `IDEMPOTENCY_CONFLICT` | Idempotency key reused for a different canonical request (command, args, capability, target, version or execution options). The prior execution/passport is never returned. |
 
 ## CommandOutcome
 

@@ -1,6 +1,6 @@
 import type { Db } from "@/lib/db/database";
 import { now, uuid } from "@/lib/db/util";
-import { computeParamHash, canonicalBinding } from "@/lib/commands/canonical";
+import { computeParamHash, canonicalBinding, IdempotencyConflictError } from "@/lib/commands/canonical";
 import { AuditService } from "./audit";
 import { PolicyEngine, AuthorizationError } from "./policy";
 import { RiskClassifier } from "./risk";
@@ -77,12 +77,6 @@ export class ActionPassportService {
       }
     }
 
-    // Idempotency: same workspace + idempotency key returns the existing passport.
-    const existing = this.db
-      .prepare("SELECT * FROM action_passports WHERE workspace_id = ? AND idempotency_key = ?")
-      .get(actor.workspaceId, action.idempotencyKey) as Passport | undefined;
-    if (existing) return { passport: this.expireIfNeeded(existing.id), created: false };
-
     // Server-authoritative risk classification (client-proposed risk is ignored;
     // the ruleset is the only source, so a client can never lower risk).
     const { risk } = this.risk.classify({
@@ -104,6 +98,23 @@ export class ActionPassportService {
         args: action.params ?? {},
         executionOptions: { dataScope: action.dataScope },
       });
+
+    // Idempotency is scoped to (workspace, key) AND the complete canonical
+    // binding. The same key reused for a different canonical payload must
+    // never return the unrelated prior passport.
+    const existing = this.db
+      .prepare("SELECT * FROM action_passports WHERE workspace_id = ? AND idempotency_key = ?")
+      .get(actor.workspaceId, action.idempotencyKey) as Passport | undefined;
+    if (existing) {
+      if (existing.param_hash === paramHash && existing.params_canonical === paramsCanonical) {
+        return { passport: this.expireIfNeeded(existing.id), created: false };
+      }
+      throw new IdempotencyConflictError(
+        "Idempotency key reused for a different request in workspace " + actor.workspaceId,
+        actor.workspaceId,
+        action.idempotencyKey,
+      );
+    }
     const id = uuid();
     const ts = now();
     const ttlHours = opts?.ttlHours ?? 24;
@@ -113,37 +124,59 @@ export class ActionPassportService {
     const approvalRequired = this.risk.policyFor(risk).approvalRequired;
     const status: PassportState = approvalRequired ? "PENDING_APPROVAL" : "AUTHORISED";
 
-    this.db
-      .prepare(
-        `INSERT INTO action_passports
-         (id, workspace_id, initiator_user_id, agent_id, actor_type, target_type, target_id,
-          command, operation, data_scope, permission_scope, risk_class, param_hash, params_canonical, approval_policy,
-          status, idempotency_key, verification_req, created_at, updated_at, expires_at, consumed_at, revoked_at, audit_ref)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)`,
-      )
-      .run(
-        id,
-        actor.workspaceId,
-        actor.userId,
-        actor.agentId ?? null,
-        actorType,
-        action.targetType,
-        action.targetId,
-        action.command,
-        action.operation,
-        action.dataScope,
-        JSON.stringify(action.permissionScope),
-        risk,
-        paramHash,
-        paramsCanonical,
-        action.approvalPolicy,
-        status,
-        action.idempotencyKey,
-        JSON.stringify(action.verificationRequirements),
-        ts,
-        ts,
-        expiresAt,
-      );
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO action_passports
+           (id, workspace_id, initiator_user_id, agent_id, actor_type, target_type, target_id,
+            command, operation, data_scope, permission_scope, risk_class, param_hash, params_canonical, approval_policy,
+            status, idempotency_key, verification_req, created_at, updated_at, expires_at, consumed_at, revoked_at, audit_ref)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)`,
+        )
+        .run(
+          id,
+          actor.workspaceId,
+          actor.userId,
+          actor.agentId ?? null,
+          actorType,
+          action.targetType,
+          action.targetId,
+          action.command,
+          action.operation,
+          action.dataScope,
+          JSON.stringify(action.permissionScope),
+          risk,
+          paramHash,
+          paramsCanonical,
+          action.approvalPolicy,
+          status,
+          action.idempotencyKey,
+          JSON.stringify(action.verificationRequirements),
+          ts,
+          ts,
+          expiresAt,
+        );
+    } catch (err) {
+      // Concurrent duplicate insert: the (workspace, key) UNIQUE constraint
+      // fired. Re-read and reconcile — same canonical payload replays, a
+      // different one is an explicit conflict.
+      if (isUniqueConstraintError(err)) {
+        const raced = this.db
+          .prepare("SELECT * FROM action_passports WHERE workspace_id = ? AND idempotency_key = ?")
+          .get(actor.workspaceId, action.idempotencyKey) as Passport | undefined;
+        if (raced && raced.param_hash === paramHash && raced.params_canonical === paramsCanonical) {
+          return { passport: this.expireIfNeeded(raced.id), created: false };
+        }
+        if (raced) {
+          throw new IdempotencyConflictError(
+            "Idempotency key reused for a different request in workspace " + actor.workspaceId,
+            actor.workspaceId,
+            action.idempotencyKey,
+          );
+        }
+      }
+      throw err;
+    }
 
 
     const auditRef = this.audit.append({
@@ -298,3 +331,9 @@ export class ActionPassportService {
     return passport;
   }
 }
+/** True when the thrown error is a SQLite UNIQUE constraint violation. */
+function isUniqueConstraintError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /UNIQUE constraint failed/i.test(msg);
+}
+
