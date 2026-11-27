@@ -45,7 +45,7 @@ describe("Central Autopilot Chat", () => {
 
     const userMsg = screen.getByText("Plan my week");
     expect(userMsg).toBeInTheDocument();
-    expect(screen.getByText(/Demo mode — backend agent execution is not connected/i)).toBeInTheDocument();
+    expect(screen.getByText(/Demo mode — no agent execution is connected/i)).toBeInTheDocument();
   });
 
   it("keeps the send button disabled when the draft is empty", () => {
@@ -107,11 +107,13 @@ describe("Automation Studio", () => {
 });
 
 describe("Connections and Activity", () => {
-  it("shows every connection surface as not connected", () => {
+  it("shows every registered capability with its real availability state", () => {
     wrap(<ConnectionsPage />);
-    expect(screen.getAllByText("Not connected")).toHaveLength(8);
+    // 8 registered capabilities render with honest availability states.
     expect(screen.getByText("Email")).toBeInTheDocument();
     expect(screen.getByText("IoT")).toBeInTheDocument();
+    expect(screen.getAllByText("Planned").length).toBeGreaterThan(0);
+    expect(screen.getByText("Available")).toBeInTheDocument();
   });
 
   it("renders demonstration execution receipts with states", () => {
