@@ -116,6 +116,10 @@ export interface ActionRequest {
   riskClass: RiskClass;
   /** Canonical parameter hash binding the passport to exact parameters. */
   paramHash: string;
+  /** Complete validated command arguments, bound into the passport hash (CORE-02). */
+  params?: Record<string, unknown>;
+  /** Canonical binding payload string (CORE-02); computed by the gateway. */
+  paramsCanonical?: string;
   /** Idempotency key to dedupe repeated requests. */
   idempotencyKey: string;
   approvalPolicy: "NONE" | "SINGLE" | "DUAL";

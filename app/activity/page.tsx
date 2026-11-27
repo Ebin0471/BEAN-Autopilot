@@ -3,6 +3,7 @@
 import { PageHeader, DemoNote } from "@/components/PageHeader";
 import { Icon } from "@/components/Icon";
 import { ACTIVITY } from "@/lib/data";
+import { COMMAND_CATALOGUE } from "@/lib/commands/catalogue";
 import type { TaskState } from "@/lib/types";
 import styles from "./page.module.css";
 
@@ -31,9 +32,20 @@ export default function ActivityPage() {
       />
 
       <DemoNote>
-        These timeline entries are <strong>demonstration receipts</strong>. No task has been executed —
-        there is no backend in UI-01. States (success, pending, queued, failed) illustrate the receipt format only.
+        The entries below are <strong>demonstration receipts</strong> and are clearly separate from real
+        security records. CORE-02 adds a real command execution lifecycle (RECEIVED → VALIDATED → AWAITING_APPROVAL →
+        AUTHORISED → RUNNING → VERIFIED / FAILED) and audit events; live records appear under your workspace when
+        authenticated. No task has been executed in this demo view.
       </DemoNote>
+
+      <section className="card" style={{ marginBottom: 22 }}>
+        <p className="card-title"><Icon name="route" size={15} /> Command lifecycle (CORE-02)</p>
+        <p className="card-sub">{COMMAND_CATALOGUE.length} registered commands route through one governed gateway.</p>
+        <div className={styles.meta}>
+          <span><Icon name="zap" size={13} /> {COMMAND_CATALOGUE.length} commands registered</span>
+          <span><Icon name="shield" size={13} /> Passport-bound, audit-recorded</span>
+        </div>
+      </section>
 
       <div className={styles.timeline}>
         {ACTIVITY.map((a) => {

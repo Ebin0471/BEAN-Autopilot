@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS action_passports (
   permission_scope  TEXT NOT NULL,               -- JSON array
   risk_class        TEXT NOT NULL CHECK (risk_class IN ('R0','R1','R2','R3','R4')),
   param_hash        TEXT NOT NULL,
+  params_canonical  TEXT NOT NULL DEFAULT '{}',     -- canonical full payload (CORE-02)
   approval_policy   TEXT NOT NULL DEFAULT 'NONE', -- NONE | SINGLE | DUAL
   status            TEXT NOT NULL DEFAULT 'REQUESTED',
   idempotency_key   TEXT NOT NULL,
@@ -168,3 +169,88 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   version    TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL
 );
+
+-- ============================================================
+-- CORE-02: universal command registry, capability fabric and
+-- command execution lifecycle. Portable SQL (SQLite dev/test,
+-- PostgreSQL production target). Non-destructive additions.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS commands (
+  command_id            TEXT NOT NULL,
+  version               TEXT NOT NULL,
+  name                  TEXT NOT NULL,
+  description           TEXT NOT NULL,
+  category              TEXT NOT NULL,
+  required_capability   TEXT,
+  required_permissions  TEXT NOT NULL,            -- JSON array
+  server_risk_class     TEXT NOT NULL CHECK (server_risk_class IN ('R0','R1','R2','R3','R4')),
+  approval_policy       TEXT NOT NULL,
+  execution_mode        TEXT NOT NULL,
+  target_requirements   TEXT NOT NULL,            -- JSON
+  timeout_policy        TEXT NOT NULL,            -- JSON
+  rate_limit_policy     TEXT NOT NULL,            -- JSON
+  idempotency_policy    TEXT NOT NULL,            -- JSON
+  verification_contract TEXT NOT NULL,            -- JSON
+  compensation_contract TEXT NOT NULL,            -- JSON
+  availability_reqs     TEXT NOT NULL DEFAULT '[]',-- JSON array
+  deprecation_status    TEXT NOT NULL DEFAULT 'ACTIVE',
+  documentation         TEXT NOT NULL,
+  registered_by         TEXT,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  PRIMARY KEY (command_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS capabilities (
+  capability_id          TEXT NOT NULL,
+  version                TEXT NOT NULL,
+  name                   TEXT NOT NULL,
+  category               TEXT NOT NULL,
+  provider               TEXT NOT NULL,
+  description            TEXT NOT NULL,
+  supported_commands     TEXT NOT NULL DEFAULT '[]',-- JSON array
+  required_scopes        TEXT NOT NULL DEFAULT '[]',-- JSON array
+  supported_workspace_types TEXT NOT NULL DEFAULT '[]',-- JSON array
+  risk_constraints       TEXT NOT NULL DEFAULT '[]',-- JSON array
+  availability_status    TEXT NOT NULL,
+  health_status          TEXT NOT NULL DEFAULT 'UNKNOWN',
+  connection_requirements TEXT NOT NULL DEFAULT '[]',-- JSON array
+  rate_limits            TEXT NOT NULL,            -- JSON
+  timeout_limits         TEXT NOT NULL,            -- JSON
+  verification_support   INTEGER NOT NULL DEFAULT 0,
+  compensation_support   INTEGER NOT NULL DEFAULT 0,
+  documentation          TEXT NOT NULL,
+  trust_level            TEXT NOT NULL,
+  registered_by          TEXT,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  PRIMARY KEY (capability_id, version)
+);
+
+-- Command execution lifecycle records (accepted, blocked, pending, executing, verified, failed).
+CREATE TABLE IF NOT EXISTS command_executions (
+  id                TEXT PRIMARY KEY,
+  workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  actor_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  command_id        TEXT NOT NULL,
+  command_version   TEXT NOT NULL,
+  capability_id     TEXT,
+  passport_id       TEXT,
+  target_type       TEXT,
+  target_id         TEXT,
+  params_hash       TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  idempotency_key   TEXT NOT NULL,
+  adapter_id        TEXT,
+  result            TEXT,
+  evidence          TEXT,
+  error_code        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  completed_at      TEXT,
+  UNIQUE (workspace_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_exec_workspace ON command_executions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_exec_status ON command_executions(status);
+

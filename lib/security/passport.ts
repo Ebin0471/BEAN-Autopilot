@@ -1,5 +1,6 @@
 import type { Db } from "@/lib/db/database";
-import { now, uuid, sha256 } from "@/lib/db/util";
+import { now, uuid } from "@/lib/db/util";
+import { computeParamHash, canonicalBinding } from "@/lib/commands/canonical";
 import { AuditService } from "./audit";
 import { PolicyEngine, AuthorizationError } from "./policy";
 import { RiskClassifier } from "./risk";
@@ -24,6 +25,7 @@ export interface Passport {
   permission_scope: string;
   risk_class: string;
   param_hash: string;
+  params_canonical: string;
   approval_policy: string;
   status: PassportState;
   idempotency_key: string;
@@ -41,18 +43,6 @@ export class PassportError extends Error {
     super(message);
     this.name = "PassportError";
   }
-}
-
-/** Compute the canonical parameter hash binding a passport to exact parameters. */
-export function computeParamHash(action: {
-  command: string;
-  targetType: string;
-  targetId: string;
-  dataScope: string;
-}): string {
-  return sha256(
-    [action.command, action.targetType, action.targetId, action.dataScope].join("|"),
-  );
 }
 
 /**
@@ -100,7 +90,20 @@ export class ActionPassportService {
       operation: action.operation,
     });
 
-    const paramHash = computeParamHash(action);
+    // Use the gateway-computed full-payload binding when supplied (CORE-02);
+    // otherwise fall back to the CORE-01-compatible hash over the action shape.
+    const paramHash = action.paramHash && action.paramHash.length > 0 ? action.paramHash : computeParamHash(action);
+    const paramsCanonical =
+      action.paramsCanonical ??
+      canonicalBinding({
+        workspaceId: actor.workspaceId,
+        commandId: action.command,
+        commandVersion: "1",
+        targetType: action.targetType,
+        targetId: action.targetId,
+        args: action.params ?? {},
+        executionOptions: { dataScope: action.dataScope },
+      });
     const id = uuid();
     const ts = now();
     const ttlHours = opts?.ttlHours ?? 24;
@@ -114,9 +117,9 @@ export class ActionPassportService {
       .prepare(
         `INSERT INTO action_passports
          (id, workspace_id, initiator_user_id, agent_id, actor_type, target_type, target_id,
-          command, operation, data_scope, permission_scope, risk_class, param_hash, approval_policy,
+          command, operation, data_scope, permission_scope, risk_class, param_hash, params_canonical, approval_policy,
           status, idempotency_key, verification_req, created_at, updated_at, expires_at, consumed_at, revoked_at, audit_ref)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)`,
       )
       .run(
         id,
@@ -132,6 +135,7 @@ export class ActionPassportService {
         JSON.stringify(action.permissionScope),
         risk,
         paramHash,
+        paramsCanonical,
         action.approvalPolicy,
         status,
         action.idempotencyKey,
@@ -139,7 +143,6 @@ export class ActionPassportService {
         ts,
         ts,
         expiresAt,
-        null,
       );
 
 

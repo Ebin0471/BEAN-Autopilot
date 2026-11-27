@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { PageHeader, DemoNote } from "@/components/PageHeader";
 import { Icon } from "@/components/Icon";
 import { INITIAL_WORKFLOW } from "@/lib/data";
+import { COMMAND_CATALOGUE, RISK_LABEL } from "@/lib/commands/catalogue";
 import type { WorkflowNode, WorkflowNodeKind } from "@/lib/types";
 import styles from "./page.module.css";
 
@@ -82,6 +83,25 @@ export default function AutomationPage() {
       x: 240 + ((idSeq * 40) % 200),
       y: 120 + ((idSeq * 30) % 240),
       note: meta.label,
+    };
+    setNodes((ns) => [...ns, node]);
+    setSelectedId(id);
+    setStatus("unsaved");
+    setStatusText("Not saved");
+  }
+
+  function addCommand(commandId: string) {
+    const cmd = COMMAND_CATALOGUE.find((c) => c.commandId === commandId);
+    if (!cmd) return;
+    const id = `n${++idSeq}`;
+    const node: WorkflowNode = {
+      id,
+      kind: "action",
+      title: cmd.name,
+      x: 240 + ((idSeq * 40) % 200),
+      y: 120 + ((idSeq * 30) % 240),
+      note: `${cmd.commandId} · ${RISK_LABEL[cmd.serverRiskClass] ?? cmd.serverRiskClass}`,
+      commandId,
     };
     setNodes((ns) => [...ns, node]);
     setSelectedId(id);
@@ -186,6 +206,24 @@ export default function AutomationPage() {
             ))}
           </div>
           <hr className="divider" />
+          <p className="field-label">Command palette (registered)</p>
+          <div className={styles.paletteGrid}>
+            {COMMAND_CATALOGUE.map((c) => (
+              <button
+                key={c.commandId}
+                type="button"
+                className={styles.paletteBtn}
+                title={c.description}
+                onClick={() => addCommand(c.commandId)}
+              >
+                <Icon name="zap" size={15} />
+                {c.name}
+                <span className="dim mono">{RISK_LABEL[c.serverRiskClass]?.split(" · ")[0]}</span>
+              </button>
+            ))}
+          </div>
+          <p className={`dim ${styles.mini}`}>Commands are the real registered catalogue. Activation stays unavailable until a real execution engine exists.</p>
+          <hr className="divider" />
           <p className="field-label">Workflow state</p>
           <span className={`badge ${status === "active" ? "badge-success" : status === "saved" ? "badge-info" : "badge-warning"}`}>
             <span className="badge-dot" />
@@ -279,6 +317,18 @@ export default function AutomationPage() {
                   <span className="badge">{KIND_META[selected.kind].label}</span>
                   <span className="badge badge-gold">{selected.id}</span>
                 </div>
+                {selected.commandId && (() => {
+                  const cmd = COMMAND_CATALOGUE.find((c) => c.commandId === selected.commandId);
+                  if (!cmd) return null;
+                  return (
+                    <div className={styles.propMeta}>
+                      <span className="badge badge-info">{cmd.commandId}@{cmd.version}</span>
+                      <span className="badge">{RISK_LABEL[cmd.serverRiskClass] ?? cmd.serverRiskClass}</span>
+                      <span className="badge">Approval: {cmd.approvalPolicy}</span>
+                      <span className="badge">{cmd.requiredPermissions.join(", ") || "no permissions"}</span>
+                    </div>
+                  );
+                })()}
                 <p className={`dim ${styles.mini}`}>Drag nodes on the canvas. Click the + on a node to connect it to another.</p>
               </div>
             ) : (

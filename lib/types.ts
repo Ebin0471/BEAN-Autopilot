@@ -67,6 +67,8 @@ export interface WorkflowNode {
   x: number;
   y: number;
   note: string;
+  /** CORE-02: typed command reference when the node is a command action. */
+  commandId?: string;
 }
 
 export interface ChatMessage {
