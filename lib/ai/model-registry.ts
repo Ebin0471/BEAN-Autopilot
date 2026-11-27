@@ -1,6 +1,6 @@
 import type { Db } from "@/lib/db/database";
 import { now, uuid } from "@/lib/db/util";
-import type { ModelMetadata, ModelStatus, TaskCategory } from "./types";
+import type { ModelMetadata, ModelStatus, StructuredOutputMode, TaskCategory } from "./types";
 
 /**
  * Model Registry.
@@ -25,7 +25,7 @@ export class ModelRegistry {
           `UPDATE ai_models
            SET provider_id = ?, model_name = ?, model_version = ?, supported_tasks = ?,
                supported_modalities = ?, max_context_tokens = ?, max_output_tokens = ?,
-               structured_output = ?, tool_call = ?, streaming = ?, reasoning = ?,
+               structured_output = ?, structured_output_mode = ?, tool_call = ?, streaming = ?, reasoning = ?,
                latency_metadata = ?, cost_metadata = ?, privacy_class = ?, status = ?,
                availability_evidence = ?, updated_at = ?
            WHERE model_id = ?`,
@@ -39,6 +39,7 @@ export class ModelRegistry {
           model.maxContextTokens,
           model.maxOutputTokens,
           model.structuredOutput ? 1 : 0,
+          model.structuredOutputMode,
           model.toolCall ? 1 : 0,
           model.streaming ? 1 : 0,
           model.reasoning ? 1 : 0,
@@ -55,9 +56,9 @@ export class ModelRegistry {
         .prepare(
           `INSERT INTO ai_models
            (id, model_id, provider_id, model_name, model_version, supported_tasks, supported_modalities,
-            max_context_tokens, max_output_tokens, structured_output, tool_call, streaming, reasoning,
+            max_context_tokens, max_output_tokens, structured_output, structured_output_mode, tool_call, streaming, reasoning,
             latency_metadata, cost_metadata, privacy_class, status, availability_evidence, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           uuid(),
@@ -70,6 +71,7 @@ export class ModelRegistry {
           model.maxContextTokens,
           model.maxOutputTokens,
           model.structuredOutput ? 1 : 0,
+          model.structuredOutputMode,
           model.toolCall ? 1 : 0,
           model.streaming ? 1 : 0,
           model.reasoning ? 1 : 0,
@@ -133,6 +135,7 @@ export class ModelRegistry {
       maxContextTokens: (row.max_context_tokens as number) ?? null,
       maxOutputTokens: (row.max_output_tokens as number) ?? null,
       structuredOutput: (row.structured_output as number) === 1,
+      structuredOutputMode: ((row.structured_output_mode as string) ?? "NONE") as StructuredOutputMode,
       toolCall: (row.tool_call as number) === 1,
       streaming: (row.streaming as number) === 1,
       reasoning: (row.reasoning as number) === 1,

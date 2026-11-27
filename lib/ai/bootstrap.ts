@@ -2,17 +2,29 @@ import type { ProviderRegistry } from "./provider-registry";
 import type { ModelRegistry } from "./model-registry";
 import type { AgentRegistry } from "./agents";
 import { createDefaultTestProvider } from "./providers/test-provider";
-import { loadProviderConfigs } from "./config";
-import type { ProviderMetadata, PrivacyClass, AgentDefinition } from "./types";
+import { BeanIntelligenceAdapter, createUnconfiguredBeanAdapter } from "./providers/bean-intelligence";
+import {
+  OpenAICompatibleAdapter,
+  createUnconfiguredOpenAICompatibleAdapter,
+} from "./providers/openai-compatible";
+import { LocalInferenceAdapter, createUnconfiguredLocalAdapter } from "./providers/local-inference";
+import { loadProviderConfigs, resolveCredential } from "./config";
+import type {
+  AgentDefinition,
+  AIProviderAdapter,
+  ModelMetadata,
+} from "./types";
 
 /**
  * Register the default AI providers and models into the registries.
  *
  * The deterministic test provider is always registered and available (no
  * credentials, no external dependency), so the CORE-03 pipeline is exercisable
- * out of the box. Optional local / BEAN Intelligence providers are registered
- * as CONFIGURATION_REQUIRED when their endpoint env vars are present — they are
- * never pretend-connected; their real adapters arrive when a contract exists.
+ * out of the box. Real providers (BEAN Intelligence, OpenAI-compatible,
+ * local inference) are constructed from their documented contracts when their
+ * server-side env is present. When credentials/endpoint are absent, a provider
+ * is registered as CONFIGURATION_REQUIRED with a no-op adapter that throws on
+ * generate/stream — it is NEVER pretend-connected.
  */
 /** Register only the minimum genuine system-level agents (no providers). */
 export function registerDefaultAgents(agents: AgentRegistry): void {
@@ -35,49 +47,100 @@ export function registerDefaultAIProviders(
   //    workforce — DOC-02 remains incomplete and is not fabricated).
   if (agents) registerDefaultAgents(agents);
 
-  // 2. Optional configured providers (env-driven, opt-in).
+  // 3. Optional configured providers (env-driven, opt-in). Each real provider
+  //    is constructed from its documented contract; if its credentials/endpoint
+  //    are absent it is registered CONFIGURATION_REQUIRED with a no-op adapter
+  //    that fails on generate/stream — never pretend-connected.
   for (const cfg of loadProviderConfigs()) {
     if (cfg.providerId === "test.provider") continue;
     if (!cfg.enabled) continue;
-    const meta: ProviderMetadata = {
-      providerId: cfg.providerId,
-      providerName: cfg.providerName,
-      version: "1.0.0",
-      adapterType: cfg.adapterType,
-      endpointRef: cfg.baseUrl ? `env:${cfg.providerId}.baseUrl` : null,
-      authRef: cfg.apiKeyEnv ? `env:${cfg.apiKeyEnv}` : null,
-      supportedModalities: ["text", "structured"],
-      streamingSupported: true,
-      structuredOutputSupported: true,
-      toolCallSupported: true,
-      contextWindow: 128000,
-      rateLimit: null,
-      privacyClass: cfg.privacyClass as PrivacyClass,
-      // CONFIGURATION_REQUIRED until a real adapter/contract is supplied.
-      availabilityStatus: "CONFIGURATION_REQUIRED",
-      healthStatus: "UNKNOWN",
-    };
-    // No real adapter yet — register the definition only. Do not claim connected.
-    providers.register(meta, {
-      describe: () => meta,
-      listModels: () => Promise.resolve([]),
-      healthCheck: () =>
-        Promise.resolve({
-          providerId: cfg.providerId,
-          healthy: false,
-          health: "UNKNOWN",
-          latencyMs: null,
-          message: "Provider is registered but no adapter contract is available yet.",
-          checkedAt: new Date().toISOString(),
-        }),
-      generate: () => {
-        throw new Error(`Provider ${cfg.providerId} has no adapter contract yet.`);
-      },
-      stream: async function* () {
-        throw new Error(`Provider ${cfg.providerId} has no adapter contract yet.`);
-      },
-    });
-    void models; // models for these providers are registered when adapters land
+
+    const built = buildProvider(cfg.providerId, cfg);
+    if (!built) continue;
+
+    const adapter = built.adapter;
+    providers.register(adapter.describe(), adapter);
+
+    // Model listing is async; defer it without blocking bootstrap. The
+    // provider's adapter is registered synchronously and remains usable for
+    // generate/stream regardless of whether the listing succeeds. A failed
+    // listing does NOT make the provider unavailable — healthCheck reports
+    // the truth.
+    safeRegisterModels(adapter, models);
+  }
+}
+
+/** Build a real adapter (or an unconfigured no-op) for a config. */
+function buildProvider(
+  providerId: string,
+  cfg: { baseUrl: string | null; apiKeyEnv: string | null },
+): { adapter: AIProviderAdapter } | null {
+  if (providerId === "bean.intelligence") {
+    const apiKey = resolveCredential(cfg.apiKeyEnv);
+    if (cfg.baseUrl && apiKey) {
+      return {
+        adapter: new BeanIntelligenceAdapter(providerId, cfg.baseUrl, apiKey, "BEAN Intelligence"),
+      };
+    }
+    return { adapter: createUnconfiguredBeanAdapter(providerId).adapter };
+  }
+
+  if (providerId === "openai.compatible") {
+    const apiKey = resolveCredential(cfg.apiKeyEnv);
+    const model = process.env.OPENAI_COMPATIBLE_MODEL;
+    if (cfg.baseUrl && apiKey && model) {
+      return {
+        adapter: new OpenAICompatibleAdapter(
+          providerId,
+          cfg.baseUrl,
+          apiKey,
+          model,
+          model,
+        ),
+      };
+    }
+    return { adapter: createUnconfiguredOpenAICompatibleAdapter(providerId).adapter };
+  }
+
+  if (providerId === "local.endpoint") {
+    const model = process.env.LOCAL_INFERENCE_MODEL;
+    if (cfg.baseUrl && model) {
+      return {
+        adapter: new LocalInferenceAdapter(providerId, cfg.baseUrl, model, model),
+      };
+    }
+    return { adapter: createUnconfiguredLocalAdapter(providerId).adapter };
+  }
+
+  // Unknown provider: register nothing rather than fabricate a contract.
+  return null;
+}
+
+/**
+ * Best-effort, non-blocking model registration. Listing failures are swallowed
+ * (the provider stays registered; health reflects the true state). Only
+ * models that pass the registry's own validation are persisted.
+ */
+function safeRegisterModels(adapter: AIProviderAdapter, models: ModelRegistry): void {
+  try {
+    const promise = adapter.listModels();
+    if (promise && typeof (promise as Promise<unknown>).then === "function") {
+      (promise as Promise<ModelMetadata[]>)
+        .then((ms) => {
+          for (const m of ms) {
+            try {
+              models.register(m);
+            } catch {
+              /* duplicate/invalid model — skip */
+            }
+          }
+        })
+        .catch(() => {
+          /* listing failed — provider still registered; health reflects it */
+        });
+    }
+  } catch {
+    /* listing threw synchronously — ignore */
   }
 }
 

@@ -73,6 +73,10 @@ export class ModelRouter {
     const viable = candidates.filter((m) => {
       const provider = this.providers.get(m.providerId);
       if (!provider) return false;
+      // Production restriction: the deterministic test provider never serves
+      // production traffic. It exists to exercise the pipeline out of the box
+      // in non-production environments only.
+      if (isProduction() && provider.adapterType === "test") return false;
       if (!this.providers.isAvailable(m.providerId)) return false;
       // Never route private data to a provider of a lower privacy class.
       if (
@@ -157,6 +161,11 @@ export class ModelRouter {
         return true;
       });
   }
+}
+
+/** True when running in a production environment. */
+function isProduction(): boolean {
+  return process.env.NODE_ENV === "production";
 }
 
 /** Privacy rank: INTERNAL (highest trust) > LOCAL > EXTERNAL. */

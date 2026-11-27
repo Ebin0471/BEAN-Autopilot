@@ -6,6 +6,7 @@ import type {
   ProviderHealth,
   ProviderMetadata,
   ProviderHealthResult,
+  StructuredOutputMode,
 } from "./types";
 
 /**
@@ -39,7 +40,7 @@ export class ProviderRegistry {
           `UPDATE ai_providers
            SET provider_name = ?, version = ?, adapter_type = ?, endpoint_ref = ?, auth_ref = ?,
                supported_modalities = ?, streaming_supported = ?, structured_output_supported = ?,
-               tool_call_supported = ?, context_window = ?, rate_limit_json = ?, privacy_class = ?,
+               structured_output_mode = ?, tool_call_supported = ?, context_window = ?, rate_limit_json = ?, privacy_class = ?,
                availability_status = ?, health_status = ?, updated_at = ?
            WHERE provider_id = ?`,
         )
@@ -52,6 +53,7 @@ export class ProviderRegistry {
           JSON.stringify(meta.supportedModalities),
           meta.streamingSupported ? 1 : 0,
           meta.structuredOutputSupported ? 1 : 0,
+          meta.structuredOutputMode,
           meta.toolCallSupported ? 1 : 0,
           meta.contextWindow,
           meta.rateLimit ? JSON.stringify(meta.rateLimit) : null,
@@ -66,10 +68,10 @@ export class ProviderRegistry {
         .prepare(
           `INSERT INTO ai_providers
            (id, provider_id, provider_name, version, adapter_type, endpoint_ref, auth_ref,
-            supported_modalities, streaming_supported, structured_output_supported, tool_call_supported,
+            supported_modalities, streaming_supported, structured_output_supported, structured_output_mode, tool_call_supported,
             context_window, rate_limit_json, privacy_class, availability_status, health_status,
             created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           uuid(),
@@ -82,6 +84,7 @@ export class ProviderRegistry {
           JSON.stringify(meta.supportedModalities),
           meta.streamingSupported ? 1 : 0,
           meta.structuredOutputSupported ? 1 : 0,
+          meta.structuredOutputMode,
           meta.toolCallSupported ? 1 : 0,
           meta.contextWindow,
           meta.rateLimit ? JSON.stringify(meta.rateLimit) : null,
@@ -188,6 +191,7 @@ export class ProviderRegistry {
       supportedModalities: JSON.parse((row.supported_modalities as string) || "[]"),
       streamingSupported: (row.streaming_supported as number) === 1,
       structuredOutputSupported: (row.structured_output_supported as number) === 1,
+      structuredOutputMode: ((row.structured_output_mode as string) ?? "NONE") as StructuredOutputMode,
       toolCallSupported: (row.tool_call_supported as number) === 1,
       contextWindow: (row.context_window as number) ?? null,
       rateLimit: row.rate_limit_json ? JSON.parse(row.rate_limit_json as string) : null,

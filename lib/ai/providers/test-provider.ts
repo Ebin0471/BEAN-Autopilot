@@ -7,7 +7,9 @@ import type {
   ModelMetadata,
   ProviderHealthResult,
   ProviderMetadata,
+  StructuredOutputMode,
   TaskCategory,
+  UsageAccuracy,
 } from "../types";
 
 /**
@@ -48,6 +50,7 @@ export class TestProviderAdapter implements AIProviderAdapter {
       supportedModalities: ["text", "structured"],
       streamingSupported: true,
       structuredOutputSupported: true,
+      structuredOutputMode: "PROMPTED_JSON" as StructuredOutputMode,
       toolCallSupported: true,
       contextWindow: 128000,
       rateLimit: { maxRequests: 600, windowSeconds: 60 },
@@ -77,6 +80,7 @@ export class TestProviderAdapter implements AIProviderAdapter {
   }
 
   async generate(request: AIRequest): Promise<AIResponse> {
+    this.assertNotProduction();
     const start = Date.now();
     const model = this.opts.models.find((m) => m.modelId === request.modelId) ?? this.opts.models[0];
     const content = this.composeText(request);
@@ -90,13 +94,19 @@ export class TestProviderAdapter implements AIProviderAdapter {
       content,
       structured,
       toolCalls: [],
-      usage: { inputTokens: estimateTokens(request), outputTokens: estimateTokens(content), cachedTokens: 0 },
+      usage: {
+        inputTokens: estimateTokens(request),
+        outputTokens: estimateTokens(content),
+        cachedTokens: 0,
+        accuracy: "APPLICATION_ESTIMATE" as UsageAccuracy,
+      },
       latencyMs: Date.now() - start,
       fallbackUsed: false,
     };
   }
 
   async *stream(request: AIRequest, signal?: AbortSignal): AsyncIterable<AIStreamEvent> {
+    this.assertNotProduction();
     const content = this.composeText(request);
     // Emit the content in deterministic word-chunks to simulate streaming.
     const words = content.split(/(\s+)/);
@@ -113,12 +123,31 @@ export class TestProviderAdapter implements AIProviderAdapter {
       type: "complete",
       requestId: request.requestId,
       content,
-      usage: { inputTokens: estimateTokens(request), outputTokens: estimateTokens(content), cachedTokens: 0 },
+      usage: {
+        inputTokens: estimateTokens(request),
+        outputTokens: estimateTokens(content),
+        cachedTokens: 0,
+        accuracy: "APPLICATION_ESTIMATE" as UsageAccuracy,
+      },
     };
   }
 
   async cancel(_requestId: string): Promise<void> {
     // Deterministic test provider: cancellation is cooperative via the signal.
+  }
+
+  /**
+   * Production restriction: the deterministic test provider must never serve
+   * production traffic. It is registered so the pipeline is exercisable out of
+   * the box in non-production, but the router excludes it in production and
+   * these guards fail closed if it is invoked directly anyway.
+   */
+  private assertNotProduction(): void {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "The deterministic test provider is not permitted in production.",
+      );
+    }
   }
 
   private composeText(request: AIRequest): string {
@@ -153,6 +182,7 @@ export function createDefaultTestProvider(): {
       maxContextTokens: 128000,
       maxOutputTokens: 4096,
       structuredOutput: true,
+      structuredOutputMode: "PROMPTED_JSON" as StructuredOutputMode,
       toolCall: true,
       streaming: true,
       reasoning: false,
@@ -172,6 +202,7 @@ export function createDefaultTestProvider(): {
       maxContextTokens: 128000,
       maxOutputTokens: 8192,
       structuredOutput: true,
+      structuredOutputMode: "PROMPTED_JSON" as StructuredOutputMode,
       toolCall: true,
       streaming: true,
       reasoning: true,

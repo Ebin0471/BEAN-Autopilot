@@ -90,6 +90,8 @@ export interface ProviderMetadata {
   supportedModalities: Modality[];
   streamingSupported: boolean;
   structuredOutputSupported: boolean;
+  /** How structured output is obtained: native schema, prompted JSON, or none. */
+  structuredOutputMode: StructuredOutputMode;
   toolCallSupported: boolean;
   contextWindow: number | null;
   rateLimit: RateLimitMetadata | null;
@@ -97,6 +99,14 @@ export interface ProviderMetadata {
   availabilityStatus: ProviderAvailability;
   healthStatus: ProviderHealth;
 }
+
+/**
+ * Structured-output modes. NATIVE_JSON_SCHEMA means the provider enforces a
+ * JSON schema natively. PROMPTED_JSON means Autopilot requests a JSON object
+ * in text and parses it (the model is not schema-constrained). NONE means no
+ * structured output is supported.
+ */
+export type StructuredOutputMode = "NONE" | "PROMPTED_JSON" | "NATIVE_JSON_SCHEMA";
 
 export type ModelStatus = "REGISTERED" | "AVAILABLE" | "DISABLED";
 
@@ -110,6 +120,8 @@ export interface ModelMetadata {
   maxContextTokens: number | null;
   maxOutputTokens: number | null;
   structuredOutput: boolean;
+  /** Structured-output mode for this model (NATIVE / PROMPTED / NONE). */
+  structuredOutputMode: StructuredOutputMode;
   toolCall: boolean;
   streaming: boolean;
   reasoning: boolean;
@@ -163,10 +175,19 @@ export interface AIRequest {
   signal?: AbortSignal;
 }
 
+/** How token counts were determined — never confuse estimate with exact. */
+export type UsageAccuracy =
+  | "PROVIDER_REPORTED_EXACT"
+  | "PROVIDER_REPORTED_ESTIMATE"
+  | "APPLICATION_ESTIMATE"
+  | "UNKNOWN";
+
 export interface UsageMetadata {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  /** Truthful provenance of the counts above. */
+  accuracy: UsageAccuracy;
 }
 
 export interface AIResponse {
