@@ -10,6 +10,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(root, "."),
+      // Vite 1.6 does not recognise node:sqlite; route it through the runtime shim.
+      "node:sqlite": path.resolve(root, "lib/db/sqlite-shim.ts"),
     },
   },
   test: {
