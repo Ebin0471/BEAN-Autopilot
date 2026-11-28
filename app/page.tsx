@@ -42,20 +42,19 @@ export default function HomePage() {
       <PageHeader
         eyebrow="Home"
         title={`${greeting()} — ${workspaceMeta.label} workspace`}
-        sub={`A chat-first operating layer for ${workspaceMeta.blurb.toLowerCase()}. Describe an outcome in plain language; the platform plans, authorises, executes and verifies.`}
+        sub={`A chat-first helper for ${workspaceMeta.blurb.toLowerCase()}. Describe what you want in plain language — Autopilot will plan the steps, and only acts with your approval.`}
         icon="home"
       />
 
       <DemoNote>
-        This is a <strong>UI-01 demonstration shell</strong>. All overviews, tasks, approvals and
-        activity below are illustrative placeholders — there is no live backend, agent execution or
-        real data yet.
+        Everything below is <strong>demonstration content</strong>. The tasks, approvals and activity
+        shown here are illustrative placeholders — there is no live backend or real data in this view.
       </DemoNote>
 
       <div className={`${styles.heroComposer} ${styles.mt}`}>
         <div className={styles.composer}>
           <label className="field-label" htmlFor="home-prompt">
-            Universal prompt composer
+            What would you like Autopilot to help you do?
           </label>
           <textarea
             id="home-prompt"
@@ -76,7 +75,7 @@ export default function HomePage() {
             <Icon name="automation" size={20} />
             <div>
               <strong>Automation Studio</strong>
-              <span>Build node-based workflows visually</span>
+              <span>An advanced option — build workflows visually</span>
             </div>
             <Icon name="arrowRight" size={16} className={styles.qaArrow} />
           </Link>
@@ -87,7 +86,7 @@ export default function HomePage() {
         {/* suggested actions */}
         <section className="card">
           <p className="card-title"><Icon name="zap" size={15} /> Suggested actions</p>
-          <p className="card-sub">Try these to explore the workflow.</p>
+          <p className="card-sub">Pick an idea to open it in Chat.</p>
           <ul className={styles.actionList}>
             {SUGGESTED_ACTIONS.map((a) => (
               <li key={a}>
@@ -124,7 +123,7 @@ export default function HomePage() {
         {/* pending approvals */}
         <section className="card">
           <p className="card-title"><Icon name="shield" size={15} /> Pending approvals</p>
-          <p className="card-sub">Actions awaiting explicit approval (R3+).</p>
+          <p className="card-sub">Actions waiting for your approval.</p>
           <ul className={styles.approvalList}>
             {PENDING_APPROVALS.map((p) => (
               <li key={p.id} className={styles.approvalRow}>
@@ -147,7 +146,7 @@ export default function HomePage() {
             <p className="card-title" style={{ marginBottom: 0 }}><Icon name="agents" size={15} /> Agent workforce</p>
             <Link href="/agents" className="btn btn-ghost btn-sm">Browse all</Link>
           </div>
-          <p className="card-sub">Documented agents are <strong>planned</strong>, not implemented.</p>
+          <p className="card-sub">These agents are <strong>planned</strong> — not implemented yet.</p>
           <div className={styles.agentBars}>
             <div>
               <div className={styles.agentBarRow}>
@@ -174,7 +173,7 @@ export default function HomePage() {
               <div className={styles.bar}><span className={styles.barFill} style={{ width: "100%" }} /></div>
             </div>
           </div>
-          <p className={`dim ${styles.mini}`}>No agent is active or configured in UI-01.</p>
+          <p className={`dim ${styles.mini}`}>No agent is active or configured yet.</p>
         </section>
 
         {/* recent activity */}

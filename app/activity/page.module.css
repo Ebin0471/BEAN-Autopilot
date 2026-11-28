@@ -4,11 +4,15 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  list-style: none;
+  margin-left: 0;
+  padding-left: 0;
 }
 .entry {
   display: flex;
   gap: 16px;
   padding: 14px 0;
+  list-style: none;
 }
 .entry::before {
   content: "";
@@ -57,6 +61,9 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+.meta .mono {
+  overflow-wrap: anywhere;
 }
 .meta svg {
   color: var(--text-dim);

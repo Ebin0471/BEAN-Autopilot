@@ -26,13 +26,13 @@ export default function FilesPage() {
       <PageHeader
         eyebrow="Files & Knowledge"
         title="Your files and knowledge"
-        sub="User-controlled, source-linked memory scoped to the current workspace. UI-01 shows the file browser shell."
+        sub="Your files and notes, scoped to the current workspace. This is a file browser preview."
         icon="files"
       />
 
       <DemoNote>
         Files and knowledge entries are <strong>demonstration placeholders</strong>. There is no file
-        storage or knowledge base connected in UI-01.
+        storage or knowledge base connected in this view.
       </DemoNote>
 
       <div className={`${styles.layout} ${styles.mt}`}>
@@ -62,7 +62,7 @@ export default function FilesPage() {
           <p className="dim">{active.name}</p>
           <div className={styles.preview}>
             <span className="mono">{active.kind} · {active.size}</span>
-            <p className="dim">Demonstration preview — no file content is stored or rendered in UI-01.</p>
+            <p className="dim">Demonstration preview — no file content is stored or rendered in this view.</p>
           </div>
         </section>
 

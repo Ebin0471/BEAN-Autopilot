@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, within, fireEvent } from "@testing-library/react";
 import { WorkspaceProvider } from "@/lib/workspace";
 import HomePage from "@/app/page";
@@ -7,6 +7,7 @@ import AgentsPage from "@/app/agents/page";
 import AutomationPage from "@/app/automation/page";
 import ConnectionsPage from "@/app/connections/page";
 import ActivityPage from "@/app/activity/page";
+import chatStyles from "@/app/chat/page.module.css";
 
 function wrap(ui: React.ReactElement) {
   return render(<WorkspaceProvider>{ui}</WorkspaceProvider>);
@@ -16,8 +17,8 @@ describe("Home dashboard", () => {
   it("renders the greeting and clearly labels demo data", () => {
     wrap(<HomePage />);
     expect(screen.getByText(/Good morning|Good afternoon|Good evening/)).toBeInTheDocument();
-    expect(screen.getByRole("note")).toHaveTextContent(/UI-01 demonstration shell/i);
-    expect(screen.getByText(/Universal prompt composer/)).toBeInTheDocument();
+    expect(screen.getByRole("note")).toHaveTextContent(/demonstration content/i);
+    expect(screen.getByText(/What would you like Autopilot to help you do/)).toBeInTheDocument();
     expect(screen.getByText(/Suggested actions/)).toBeInTheDocument();
     expect(screen.getByText(/Pending approvals/)).toBeInTheDocument();
   });
@@ -33,7 +34,7 @@ describe("Central Autopilot Chat", () => {
   it("shows the workspace context indicator and agent selector", () => {
     wrap(<ChatPage />);
     expect(screen.getByText(/context/i)).toBeInTheDocument();
-    expect(screen.getByLabelText("Message")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Message/i)).toBeInTheDocument();
     expect(screen.getByText(/Auto-route/)).toBeInTheDocument();
   });
 
@@ -42,7 +43,7 @@ describe("Central Autopilot Chat", () => {
     // No authenticated session in the test environment: the composer is
     // disabled and a sign-in notice is shown. No assistant reply is fabricated.
     expect(screen.getByText(/Sign in to/i)).toBeInTheDocument();
-    const textarea = screen.getByLabelText("Message");
+    const textarea = screen.getByLabelText(/Message/i);
     fireEvent.change(textarea, { target: { value: "Plan my week" } });
     expect(screen.getByRole("button", { name: /Send/i })).toBeDisabled();
     expect(screen.queryByText(/test-provider/i)).not.toBeInTheDocument();
@@ -51,6 +52,33 @@ describe("Central Autopilot Chat", () => {
   it("keeps the send button disabled when the draft is empty", () => {
     wrap(<ChatPage />);
     expect(screen.getByRole("button", { name: /Send/i })).toBeDisabled();
+  });
+
+  it("renders conversations as keyboard-accessible buttons with a mapped active class", async () => {
+    global.fetch = vi.fn(async (url: string) => {
+      if (url.includes("/api/ai/conversations/")) {
+        return { ok: true, json: async () => ({ messages: [] }) };
+      }
+      if (url.includes("/api/ai/conversations")) {
+        return {
+          ok: true,
+          json: async () => ({
+            conversations: [{ id: "c1", title: "Trip plan", updatedAt: new Date().toISOString() }],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ workspaces: [{ id: "w1", kind: "personal", name: "Personal" }] }),
+      };
+    }) as never;
+
+    wrap(<ChatPage />);
+    const item = await screen.findByRole("button", { name: /Trip plan/ });
+    fireEvent.click(item);
+    // the active conversation must use the CSS-module class (not a bare "active")
+    expect(item.className).toContain(chatStyles.convActive);
+    expect(item).toHaveAttribute("aria-current", "true");
   });
 });
 
@@ -84,7 +112,7 @@ describe("Agent Workforce", () => {
 describe("Automation Studio", () => {
   it("renders the initial nodes and node palette", () => {
     wrap(<AutomationPage />);
-    expect(screen.getByText(/Node palette/)).toBeInTheDocument();
+    expect(screen.getByText(/Add a node/)).toBeInTheDocument();
     expect(screen.getByText(/Research & Fact Checking/)).toBeInTheDocument();
     expect(screen.getByText(/Node properties/)).toBeInTheDocument();
   });
@@ -112,8 +140,8 @@ describe("Connections and Activity", () => {
     // 8 registered capabilities render with honest availability states.
     expect(screen.getByText("Email")).toBeInTheDocument();
     expect(screen.getByText("IoT")).toBeInTheDocument();
-    expect(screen.getAllByText("Planned").length).toBeGreaterThan(0);
-    expect(screen.getByText("Available")).toBeInTheDocument();
+    expect(screen.getAllByText("Not yet available").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
   });
 
   it("renders demonstration execution receipts with states", () => {

@@ -5,7 +5,7 @@ import { Shell } from "@/components/Shell";
 export const metadata: Metadata = {
   title: "BEAN Autopilot — Universal AI Operating System",
   description:
-    "A permission-controlled, chat-first AI operating system for personal, professional and business workspaces. UI-01 foundation.",
+    "A permission-controlled, chat-first AI operating system for personal, professional and business workspaces.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

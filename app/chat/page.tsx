@@ -4,11 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader, DemoNote } from "@/components/PageHeader";
 import { Icon } from "@/components/Icon";
 import { useWorkspace } from "@/lib/workspace";
-import {
-  CLIENT_MODELS,
-  CLIENT_PROVIDERS,
-  type ClientModel,
-} from "@/lib/ai/catalogue";
+import { CLIENT_MODELS, type ClientModel } from "@/lib/ai/catalogue";
+import { SUGGESTED_ACTIONS } from "@/lib/data";
 import type { TaskPlan } from "@/lib/ai/types";
 import type { ChatMessage } from "@/lib/types";
 import styles from "./page.module.css";
@@ -49,6 +46,17 @@ interface StreamEvent {
   message?: string;
 }
 
+const EXEC_STATUS: Record<string, { cls: string; label: string }> = {
+  VERIFIED: { cls: "badge-success", label: "Completed and verified" },
+  AUTHORIZED: { cls: "badge-info", label: "Authorised" },
+  RUNNING: { cls: "badge-info", label: "Running" },
+  VALIDATED: { cls: "badge-info", label: "Checked" },
+  RECEIVED: { cls: "badge-info", label: "Received" },
+  AWAITING_APPROVAL: { cls: "badge-warning", label: "Needs your approval" },
+  PARTIAL: { cls: "badge-warning", label: "Partly completed" },
+  FAILED: { cls: "badge-danger", label: "Failed" },
+};
+
 export default function ChatPage() {
   const { workspace, workspaceMeta } = useWorkspace();
   const [session, setSession] = useState<{ workspaces: { id: string; kind: string; name: string }[] } | null>(null);
@@ -62,6 +70,7 @@ export default function ChatPage() {
   const [plan, setPlan] = useState<TaskPlan | null>(null);
   const [executions, setExecutions] = useState<ExecutionReceipt[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -123,7 +132,7 @@ export default function ChatPage() {
           {
             id: "sys",
             role: "system",
-            text: `Connected to the CORE-03 intelligence engine. ${CLIENT_PROVIDERS.length} provider(s), ${CLIENT_MODELS.length} model(s) registered. Describe an outcome — Autopilot will understand, plan and execute only permitted commands through the governed gateway.`,
+            text: `Autopilot is ready. Describe an outcome in plain language — it will plan the steps, and only runs actions with your approval.`,
           },
         ]);
         setPlan(null);
@@ -231,43 +240,63 @@ export default function ChatPage() {
   }
 
   const availableModels = CLIENT_MODELS;
+  const isEmpty = messages.length === 0 && !streaming && !error;
 
   return (
     <main className="page">
       <PageHeader
         eyebrow="Autopilot Chat"
-        title="Central Autopilot Chat"
-        sub="The primary product experience: describe an outcome, then review the plan, approvals, execution and verified receipt."
+        title="Chat"
+        sub="Describe what you want in plain language. Autopilot plans the steps, and only runs actions with your approval."
         icon="chat"
       />
 
       <div className={styles.layout}>
         {/* conversation history */}
         <aside className={styles.history}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <p className="field-label">Conversation history</p>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={startNewConversation} disabled={!workspaceId}>
-              <Icon name="plus" size={14} /> New
-            </button>
-          </div>
-          <ul className={styles.convList}>
-            {conversations.map((c) => (
-              <li
-                key={c.id}
-                className={`${styles.convItem} ${activeConv?.id === c.id ? "active" : ""}`}
-                onClick={() => selectConversation(c)}
+          <div className={styles.historyHead}>
+            <p className="field-label" style={{ marginBottom: 0 }}>Conversations</p>
+            <div className={styles.historyActions}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setHistoryOpen((v) => !v)}
+                aria-expanded={historyOpen}
+                aria-label={historyOpen ? "Hide conversation list" : "Show conversation list"}
               >
-                <Icon name="chat" size={15} />
-                <span className={styles.convInfo}>
-                  <strong>{c.title}</strong>
-                  <span className="dim mono">{new Date(c.updatedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
-                </span>
-              </li>
-            ))}
-            {conversations.length === 0 && (
-              <li className="dim" style={{ fontSize: 12, padding: "8px 4px" }}>No conversations yet.</li>
-            )}
-          </ul>
+                <Icon name={historyOpen ? "x" : "menu"} size={14} />
+                {historyOpen ? "Hide" : "Show"}
+              </button>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={startNewConversation} disabled={!workspaceId}>
+                <Icon name="plus" size={14} /> New chat
+              </button>
+            </div>
+          </div>
+          {historyOpen && (
+            <ul className={styles.convList}>
+              {conversations.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    className={`${styles.convItem} ${activeConv?.id === c.id ? styles.convActive : ""}`}
+                    onClick={() => selectConversation(c)}
+                    aria-current={activeConv?.id === c.id ? "true" : undefined}
+                  >
+                    <Icon name="chat" size={15} />
+                    <span className={styles.convInfo}>
+                      <strong>{c.title}</strong>
+                      <span className="dim mono">
+                        {new Date(c.updatedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+              {conversations.length === 0 && (
+                <li className="dim" style={{ fontSize: 12, padding: "8px 4px" }}>No conversations yet.</li>
+              )}
+            </ul>
+          )}
           {!workspaceId && (
             <DemoNote>Sign in to create and use conversations.</DemoNote>
           )}
@@ -280,9 +309,11 @@ export default function ChatPage() {
               <Icon name="layers" size={13} />
               {workspaceMeta.label} context
             </span>
-            <label className={styles.agentSelect}>
+            <div className={styles.agentSelect}>
+              <label className="sr-only" htmlFor="chat-model">Model</label>
               <Icon name="zap" size={14} />
               <select
+                id="chat-model"
                 className="select"
                 value={modelId}
                 onChange={(e) => setModelId(e.target.value)}
@@ -295,10 +326,31 @@ export default function ChatPage() {
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
           </div>
 
           <div className={styles.messages}>
+            {isEmpty && (
+              <div className={styles.empty}>
+                <span className={styles.emptyIcon}>
+                  <Icon name="spark" size={22} />
+                </span>
+                <p className={styles.emptyTitle}>Ask Autopilot to help with something</p>
+                <p className="dim">Type a request below, or pick an idea:</p>
+                <div className={styles.emptyChips}>
+                  {SUGGESTED_ACTIONS.map((a) => (
+                    <button
+                      key={a}
+                      type="button"
+                      className={styles.emptyChip}
+                      onClick={() => setDraft(a)}
+                    >
+                      {a}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {messages.map((m) => (
               <div key={m.id} className={`${styles.msg} ${m.role === "user" ? styles.msgUser : styles.msgSystem}`}>
                 <span className={styles.msgRole}>
@@ -313,9 +365,17 @@ export default function ChatPage() {
                 <p className={styles.msgText}>{streamText}</p>
               </div>
             )}
+            {streaming && !streamText && (
+              <div className={`${styles.msg} ${styles.msgSystem}`}>
+                <span className={styles.msgRole}>Agent</span>
+                <p className={styles.msgText}>
+                  <span className={styles.thinking}>Autopilot is thinking…</span>
+                </p>
+              </div>
+            )}
             {error && (
               <div className={`${styles.msg} ${styles.msgSystem}`}>
-                <span className={styles.msgRole} style={{ color: "var(--danger)" }}>Error</span>
+                <span className={styles.msgRole} style={{ color: "var(--danger)" }}>Something went wrong</span>
                 <p className={styles.msgText} style={{ borderColor: "var(--danger)" }}>{error}</p>
               </div>
             )}
@@ -334,17 +394,15 @@ export default function ChatPage() {
                   send();
                 }
               }}
-              aria-label="Message"
+              aria-label="Message — press Enter to send, Shift+Enter for a new line"
               disabled={!workspaceId}
             />
             <div className={styles.composerBar}>
               <div className={styles.composerTools}>
-                <span className="dim mono">
-                  {CLIENT_PROVIDERS[0]?.providerName} · {CLIENT_MODELS.length} models
-                </span>
+                <span className="dim">Press Enter to send · Shift+Enter for a new line</span>
               </div>
               {streaming ? (
-                <button type="button" className="btn btn-ghost" onClick={stop}>
+                <button type="button" className={`${styles.btnStop} btn`} onClick={stop}>
                   <Icon name="x" size={15} /> Stop
                 </button>
               ) : (
@@ -360,11 +418,14 @@ export default function ChatPage() {
         <aside className={styles.planning}>
           {plan ? (
             <section className="card">
-              <p className="card-title"><Icon name="route" size={15} /> Task plan</p>
+              <p className="card-title"><Icon name="route" size={15} /> What Autopilot plans to do</p>
               <p className="card-sub">{plan.objective}</p>
-              <p className={`badge ${plan.riskClassification === "R0" || plan.riskClassification === "R1" ? "badge-info" : "badge-warning"}`}>
-                {plan.riskClassification} · {plan.estimatedComplexity}
-              </p>
+              {plan.approvalRequirements.length > 0 && (
+                <p className={styles.needApproval}>
+                  <Icon name="shield" size={14} />
+                  This plan includes steps that need your approval before they run ({plan.approvalRequirements.length}).
+                </p>
+              )}
               <ol className={styles.stageList}>
                 {plan.tasks.map((t) => (
                   <li key={t.taskId} className={styles.stageItem}>
@@ -373,47 +434,70 @@ export default function ChatPage() {
                   </li>
                 ))}
               </ol>
-              {plan.approvalRequirements.length > 0 && (
-                <p className={`dim ${styles.mini}`}>Awaiting approval: {plan.approvalRequirements.length} item(s).</p>
-              )}
-              {plan.unresolvedQuestions.length > 0 && (
-                <p className={`dim ${styles.mini}`}>Open questions: {plan.unresolvedQuestions.length}.</p>
-              )}
+              <details className={styles.techDetails}>
+                <summary>Technical details</summary>
+                <dl className={styles.techList}>
+                  <div><dt>Risk class</dt><dd className="mono">{plan.riskClassification}</dd></div>
+                  <div><dt>Estimated complexity</dt><dd className="mono">{plan.estimatedComplexity}</dd></div>
+                  <div><dt>Task IDs</dt><dd className="mono">{plan.tasks.map((t) => t.taskId).join(", ") || "—"}</dd></div>
+                  <div>
+                    <dt>Approval requirements</dt>
+                    <dd className="mono">{plan.approvalRequirements.join(", ") || "None"}</dd>
+                  </div>
+                  {plan.unresolvedQuestions.length > 0 && (
+                    <div>
+                      <dt>Open questions</dt>
+                      <dd className="mono">{plan.unresolvedQuestions.join(", ")}</dd>
+                    </div>
+                  )}
+                </dl>
+              </details>
             </section>
           ) : (
             <section className="card">
-              <p className="card-title"><Icon name="route" size={15} /> Task plan</p>
-              <p className="card-sub">A plan appears when you send a request.</p>
+              <p className="card-title"><Icon name="route" size={15} /> What Autopilot plans to do</p>
+              <p className="card-sub">A plan appears here when you send a request.</p>
             </section>
           )}
 
           <section className="card">
-            <p className="card-title"><Icon name="activity" size={15} /> Execution receipts</p>
-            <p className="card-sub">Governed through the CORE-02 gateway.</p>
+            <p className="card-title"><Icon name="activity" size={15} /> Actions and results</p>
+            <p className="card-sub">Every action runs through the governed gateway and produces a receipt.</p>
             {executions.length === 0 ? (
-              <p className="dim" style={{ fontSize: 12 }}>No executions yet.</p>
+              <p className="dim" style={{ fontSize: 13 }}>No actions yet.</p>
             ) : (
-              <dl className={styles.receipt}>
-                {executions.map((e) => (
-                  <div key={e.executionId}>
-                    <dt className="mono">{e.commandId}</dt>
-                    <dd>
-                      <span className={`badge ${e.status === "VERIFIED" ? "badge-info" : "badge-warning"}`}>
-                        {e.status}
+              <ul className={styles.receiptList}>
+                {executions.map((e) => {
+                  const status = EXEC_STATUS[e.status] ?? { cls: "badge", label: e.status };
+                  return (
+                    <li key={e.executionId} className={styles.receiptItem}>
+                      <span className={`badge ${status.cls}`}>
+                        <span className="badge-dot" />
+                        {status.label}
                       </span>
-                    </dd>
-                  </div>
-                ))}
-              </dl>
+                      <details className={styles.techDetails}>
+                        <summary>Details</summary>
+                        <dl className={styles.techList}>
+                          <div><dt>Command</dt><dd className="mono">{e.commandId}</dd></div>
+                          <div><dt>Execution</dt><dd className="mono">{e.executionId}</dd></div>
+                          <div><dt>Passport</dt><dd className="mono">{e.passportId ?? "—"}</dd></div>
+                          <div><dt>Status</dt><dd className="mono">{e.status}</dd></div>
+                          {e.errorCode && <div><dt>Error</dt><dd className="mono">{e.errorCode}</dd></div>}
+                        </dl>
+                      </details>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </section>
 
           <section className="card">
-            <p className="card-title"><Icon name="shield" size={15} /> Governance</p>
-            <p className="card-sub">Model reasons · orchestrator coordinates · gateway governs.</p>
+            <p className="card-title"><Icon name="shield" size={15} /> How actions are governed</p>
+            <p className="card-sub">Autopilot plans, then every action is checked before it runs.</p>
             <div className={styles.sourceRow}>
               <Icon name="check" size={15} />
-              <span>Actions execute only through the CORE-02 gateway with passports.</span>
+              <span>Actions run only through the governed gateway with approval passports.</span>
             </div>
           </section>
         </aside>

@@ -55,15 +55,15 @@ export default function AgentsPage() {
       <PageHeader
         eyebrow="Agent Workforce"
         title="Agent discovery"
-        sub="Browse the documented agent roster. Every agent here is planned only — no agent runtime or contract has been imported yet."
+        sub="Browse the planned agent roster. These agents are documented ideas — none is configured or running yet."
         icon="agents"
       />
 
       <DemoNote>
-        All {AGENTS.length} shown agents are <strong>planned</strong>. CORE-02 provides the real registered
-        command catalogue ({COMMAND_CATALOGUE.length} commands) and capability fabric that agents will eventually
-        use, but no agent runtime exists. No agent is configured, available or active — agents become available
-        only with registration and health evidence in a later milestone.
+        All {AGENTS.length} agents shown are <strong>planned</strong>. The real command catalogue
+        ({COMMAND_CATALOGUE.length} commands) exists behind the scenes, but no agent runtime is implemented —
+        no agent is configured, available or active. Agents become available only with registration and
+        health checks in a later milestone.
       </DemoNote>
 
       <div className={styles.toolbar}>
@@ -91,6 +91,9 @@ export default function AgentsPage() {
         </div>
       </div>
 
+      <p className="dim" style={{ margin: "-8px 0 14px" }}>
+        Showing {filtered.length} of {AGENTS.length} agents
+      </p>
       <div className={styles.layout}>
         <div className={styles.grid}>
           {filtered.map((a) => {

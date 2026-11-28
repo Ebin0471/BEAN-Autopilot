@@ -1,10 +1,16 @@
 .mt {
   margin-top: 22px;
 }
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 16px;
+  margin-top: 16px;
 }
 .iconBox {
   display: grid;
@@ -20,9 +26,10 @@
   font-size: 15px;
   font-weight: 600;
   margin: 14px 0 4px;
+  overflow-wrap: anywhere;
 }
 .attempt {
-  font-size: 11px;
+  font-size: 12.5px;
   margin: 8px 0 0;
 }
 .metaRow {
@@ -30,4 +37,68 @@
   gap: 6px;
   flex-wrap: wrap;
   margin: 10px 0;
+}
+
+/* expandable technical details */
+.details {
+  margin: 12px 0;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.details summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text-muted);
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+.details summary::-webkit-details-marker {
+  display: none;
+}
+.details summary:hover {
+  border-color: var(--gold-line);
+  color: var(--gold-bright);
+}
+.details summary::before {
+  content: "+";
+  color: var(--text-dim);
+  font-weight: 700;
+}
+.details[open] summary::before {
+  content: "–";
+}
+.techList {
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.techList > div {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 12.5px;
+}
+.techList dt {
+  color: var(--text-dim);
+  margin: 0;
+}
+.techList dd {
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 620px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
 }

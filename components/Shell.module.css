@@ -2,6 +2,10 @@
   flex-shrink: 0;
 }
 
+.sidebarSlot {
+  display: flex;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -20,8 +24,9 @@
   display: none;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: var(--bg-elevated);
@@ -46,10 +51,6 @@
 .ctxDim {
   color: var(--text-dim);
   font-weight: 450;
-}
-
-.demoBadge {
-  margin-left: auto;
 }
 
 .content {
