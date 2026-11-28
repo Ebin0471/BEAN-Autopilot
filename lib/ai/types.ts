@@ -449,7 +449,7 @@ export interface Message {
   modelId: string | null;
   providerId: string | null;
   usage: UsageMetadata | null;
-  status: "PENDING" | "STREAMING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  status: "PENDING" | "STREAMING" | "COMPLETED" | "PARTIAL" | "FAILED" | "CANCELLED";
   errorCode: string | null;
   createdAt: string;
   seq: number;

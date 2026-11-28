@@ -39,7 +39,7 @@ import type {
   UsageMetadata,
 } from "../types";
 import { httpRequest, httpSSEStream, ProviderHTTPError } from "../http";
-import { parseSSEStream, type SSEStreamResult } from "../sse";
+import { iterateSSEFrames } from "../sse";
 import {
   EndpointSafetyError,
   defaultEndpointPolicy,
@@ -318,6 +318,11 @@ export class BeanIntelligenceAdapter implements AIProviderAdapter {
     const apiKey = this.apiKey;
 
     return (async function* (): AsyncIterable<AIStreamEvent> {
+      let content = "";
+      let sawTerminal = false;
+      let beanStreamError: { code: string; message: string; partial: boolean } | null = null;
+      let truncated = false;
+
       try {
         const byteStream = await httpSSEStream(
           `${endpoint.href}api/v1/chat/completions`,
@@ -330,52 +335,103 @@ export class BeanIntelligenceAdapter implements AIProviderAdapter {
           },
         );
 
-        const result: SSEStreamResult = await parseSSEStream(byteStream, request.signal, {
+        // GENUINE incremental forwarding: each SSE frame is relayed the moment
+        // it is parsed. Deltas reach the caller immediately rather than after
+        // the full stream is buffered.
+        for await (const frame of iterateSSEFrames(byteStream, request.signal, {
           maxBytes: 4 * 1024 * 1024,
-        });
+        })) {
+          if (request.signal?.aborted) {
+            yield {
+              type: "cancelled",
+              requestId: request.requestId,
+              error: { code: "ABORTED", message: "Request was aborted by the client." },
+            };
+            return;
+          }
 
-        // Stream accumulated deltas even on terminal errors: the gateway
-        // sends partial content before an error, and the SSE parser has
-        // accumulated it into `result.content`.
-        if (result.content.length > 0) {
-          yield { type: "delta", requestId: request.requestId, delta: result.content };
+          if (frame.kind === "truncated") {
+            truncated = true;
+            break;
+          }
+
+          let obj: Record<string, unknown>;
+          try {
+            const parsed = JSON.parse(frame.data);
+            obj =
+              typeof parsed === "object" && parsed !== null
+                ? (parsed as Record<string, unknown>)
+                : { value: parsed };
+          } catch {
+            // Non-JSON data frame: relay as a raw delta (not terminal).
+            content += frame.data;
+            yield { type: "delta", requestId: request.requestId, delta: frame.data };
+            continue;
+          }
+
+          // Terminal done frame.
+          if (obj.done === true) {
+            sawTerminal = true;
+            const done = obj;
+            yield {
+              type: "complete",
+              requestId: request.requestId,
+              content,
+              usage: toUsage(
+                done.usage as { tokensIn: number; tokensOut: number; exact: boolean } | undefined,
+              ),
+            };
+            return;
+          }
+
+          // Typed error frame.
+          if (typeof obj.error === "string") {
+            sawTerminal = true;
+            beanStreamError = {
+              code: typeof obj.code === "string" ? obj.code : "SSE_ERROR",
+              message: obj.error,
+              partial: obj.partial === true,
+            };
+            break;
+          }
+
+          // Delta frame: forward immediately.
+          if (typeof obj.delta === "string") {
+            content += obj.delta;
+            yield { type: "delta", requestId: request.requestId, delta: obj.delta };
+          }
         }
 
-        if (result.error) {
-          // Typed error frame. Whether partial content arrived is conveyed by
-          // the deltas already yielded (honest partial-vs-complete).
+        // Stream ended. Honest terminal classification:
+        //  - a typed error frame was received (possibly after partial deltas).
+        if (beanStreamError) {
           yield streamError(
             request.requestId,
-            beanErrorCode(result.error.code, "SSE_ERROR"),
-            result.error.partial
-              ? `${result.error.message} (partial response streamed)`
-              : result.error.message,
+            beanErrorCode(beanStreamError.code, "SSE_ERROR"),
+            beanStreamError.partial
+              ? `${beanStreamError.message} (partial response streamed)`
+              : beanStreamError.message,
           );
           return;
         }
-
-        // A stream that ended without a terminal frame is TRUNCATED — never
-        // reported as a complete response.
-        if (!result.terminal) {
+        //  - the max-size bound was exceeded (truncated, never complete).
+        if (truncated) {
           yield streamError(
             request.requestId,
-            result.truncated ? "SSE_TRUNCATED" : "SSE_INCOMPLETE",
-            result.truncated
-              ? "Stream exceeded the maximum response size without a terminal frame."
-              : "Stream ended without a terminal frame.",
+            "SSE_TRUNCATED",
+            "Stream exceeded the maximum response size without a terminal frame.",
           );
           return;
         }
-
-        const done = (result.done ?? {}) as Record<string, unknown>;
-        yield {
-          type: "complete",
-          requestId: request.requestId,
-          content: result.content,
-          usage: toUsage(
-            done.usage as { tokensIn: number; tokensOut: number; exact: boolean } | undefined,
-          ),
-        };
+        //  - the stream ended without any terminal frame (incomplete).
+        if (!sawTerminal) {
+          yield streamError(
+            request.requestId,
+            "SSE_INCOMPLETE",
+            "Stream ended without a terminal frame.",
+          );
+          return;
+        }
       } catch (e) {
         if (request.signal?.aborted) {
           yield {
@@ -401,6 +457,8 @@ export class BeanIntelligenceAdapter implements AIProviderAdapter {
       }
     })();
   }
+
+  /** Resolve a requested model id  }
 
   /** Resolve a requested model id to a BEAN gateway model id. */
   private resolveModel(requested: string): string {

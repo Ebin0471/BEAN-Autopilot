@@ -36,6 +36,7 @@ import type {
   UsageMetadata,
 } from "../types";
 import { httpRequest, httpSSEStream, ProviderHTTPError } from "../http";
+import { iterateSSEFrames } from "../sse";
 import {
   EndpointSafetyError,
   defaultEndpointPolicy,
@@ -278,6 +279,12 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     const caps = this.capabilities;
 
     return (async function* (): AsyncIterable<AIStreamEvent> {
+      let content = "";
+      let sawTerminal = false;
+      let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
+      let openaiError: { code: string; message: string } | null = null;
+      let truncated = false;
+
       try {
         const byteStream = await httpSSEStream(`${endpoint.href}v1/chat/completions`, {
           method: "POST",
@@ -287,25 +294,91 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
           timeoutMs: 60_000,
         });
 
-        // The OpenAI SSE format differs from BEAN's: deltas are nested under
-        // choices[0].delta.content, the terminal frame is the literal
-        // `data: [DONE]`, and usage (if requested) arrives in a final frame.
-        const result = await parseOpenAIStream(byteStream, request.signal);
-
-        if (result.error) {
-          if (result.content.length > 0) {
-            yield { type: "delta", requestId: request.requestId, delta: result.content };
+        // GENUINE incremental forwarding: each SSE frame is relayed the moment
+        // it is parsed. The OpenAI frame shape is interpreted inline:
+        //   data: {"choices":[{"delta":{"content":"..."}}]}  -> delta
+        //   data: {"usage":{...}}                              -> usage (final)
+        //   data: {"error":{...}}                              -> error
+        //   data: [DONE]                                       -> terminal
+        for await (const frame of iterateSSEFrames(byteStream, request.signal, {
+          maxBytes: 4 * 1024 * 1024,
+        })) {
+          if (request.signal?.aborted) {
+            yield {
+              type: "cancelled",
+              requestId: request.requestId,
+              error: { code: "ABORTED", message: "Request was aborted by the client." },
+            };
+            return;
           }
-          yield streamError(request.requestId, result.error.code, result.error.message);
+
+          if (frame.kind === "truncated") {
+            truncated = true;
+            break;
+          }
+
+          const data = frame.data;
+          // Terminal [DONE] frame.
+          if (data === "[DONE]") {
+            sawTerminal = true;
+            yield {
+              type: "complete",
+              requestId: request.requestId,
+              content,
+              usage: toUsage(usage, caps),
+            };
+            return;
+          }
+
+          let obj: Record<string, unknown>;
+          try {
+            obj = JSON.parse(data) as Record<string, unknown>;
+          } catch {
+            // Non-JSON data frame: relay as a raw delta (not terminal).
+            content += data;
+            yield { type: "delta", requestId: request.requestId, delta: data };
+            continue;
+          }
+
+          // Typed error frame.
+          if (obj.error) {
+            sawTerminal = true;
+            const e = obj.error as Record<string, unknown>;
+            openaiError = {
+              code: typeof e.code === "string" ? e.code : "SSE_ERROR",
+              message: typeof e.message === "string" ? e.message : "Upstream error.",
+            };
+            break;
+          }
+
+          // Usage frame (final, arrives before [DONE]).
+          if (obj.usage) {
+            usage = obj.usage as { prompt_tokens: number; completion_tokens: number };
+          }
+
+          // Delta frame: choices[0].delta.content.
+          const choice = (obj.choices as Array<Record<string, unknown>>)?.[0];
+          const delta = (choice?.delta as Record<string, unknown>)?.content;
+          if (typeof delta === "string") {
+            content += delta;
+            yield { type: "delta", requestId: request.requestId, delta };
+          }
+        }
+
+        // Stream ended. Honest terminal classification.
+        if (openaiError) {
+          yield streamError(request.requestId, openaiError.code, openaiError.message);
           return;
         }
-
-        if (result.content.length > 0) {
-          yield { type: "delta", requestId: request.requestId, delta: result.content };
+        if (truncated) {
+          yield streamError(
+            request.requestId,
+            "SSE_TRUNCATED",
+            "Stream exceeded the maximum response size without a terminal [DONE] frame.",
+          );
+          return;
         }
-
-        if (result.done === false) {
-          // Stream ended without a [DONE] terminator.
+        if (!sawTerminal) {
           yield streamError(
             request.requestId,
             "SSE_INCOMPLETE",
@@ -313,13 +386,6 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
           );
           return;
         }
-
-        yield {
-          type: "complete",
-          requestId: request.requestId,
-          content: result.content,
-          usage: toUsage(result.usage, caps),
-        };
       } catch (e) {
         if (request.signal?.aborted) {
           yield {
@@ -389,99 +455,6 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
 
     return body;
   }
-}
-
-/**
- * A minimal OpenAI-SSE parser. It shares the low-level chunk/CRLF/keepalive
- * handling with `parseSSEStream` but understands the OpenAI frame shapes:
- *   `data: {"choices":[{"delta":{"content":"..."}}]}`
- *   `data: {"usage":{...}}`
- *   `data: [DONE]`  (terminal)
- *   `: keepalive`    (comment, ignored)
- *   `data: {"error":{...}}`  (typed error)
- *
- * To avoid duplicating the framing logic, this reuses `parseSSEStream`'s
- * frame splitter by re-encoding data frames into the BEAN delta shape before
- * delegating. For clarity we instead implement a focused parser here.
- */
-async function parseOpenAIStream(
-  chunks: AsyncIterable<Uint8Array>,
-  signal?: AbortSignal,
-): Promise<{
-  content: string;
-  done: boolean;
-  usage: { prompt_tokens: number; completion_tokens: number } | undefined;
-  error: { code: string; message: string } | null;
-}> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let content = "";
-  let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
-  let done = false;
-  let error: { code: string; message: string } | null = null;
-  const MAX = 4 * 1024 * 1024;
-  let bytes = 0;
-
-  const handleFrame = (raw: string): "terminal" | "continue" => {
-    const line = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-    // A frame may be multi-line; OpenAI sends a single data line per frame.
-    for (const l of line.split("\n")) {
-      if (l === "" || l.startsWith(":")) continue; // separator / comment
-      if (!l.startsWith("data:")) continue;
-      const value = l.slice(5);
-      const data = value.startsWith(" ") ? value.slice(1) : value;
-      if (data === "[DONE]") {
-        done = true;
-        return "terminal";
-      }
-      try {
-        const obj = JSON.parse(data) as Record<string, unknown>;
-        if (obj.error) {
-          const e = obj.error as Record<string, unknown>;
-          error = {
-            code: typeof e.code === "string" ? e.code : "SSE_ERROR",
-            message: typeof e.message === "string" ? e.message : "Upstream error.",
-          };
-          return "terminal";
-        }
-        if (obj.usage) {
-          usage = obj.usage as { prompt_tokens: number; completion_tokens: number };
-        }
-        const choice = (obj.choices as Array<Record<string, unknown>>)?.[0];
-        const delta = (choice?.delta as Record<string, unknown>)?.content;
-        if (typeof delta === "string") {
-          content += delta;
-        }
-      } catch {
-        // Non-JSON data frame: ignore (do not treat as terminal).
-      }
-    }
-    return "continue";
-  };
-
-  for await (const chunk of chunks) {
-    if (signal?.aborted) break;
-    bytes += chunk.length;
-    if (bytes > MAX) break;
-    buffer += decoder.decode(chunk, { stream: true });
-    let sep: number;
-    while ((sep = findSeparator(buffer)) !== -1) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 1);
-      if (handleFrame(frame) === "terminal") {
-        return { content, done, usage, error };
-      }
-    }
-  }
-  // Flush the trailing partial frame.
-  if (buffer.trim() !== "") handleFrame(buffer);
-  return { content, done, usage, error };
-}
-
-function findSeparator(buffer: string): number {
-  const a = buffer.indexOf("\n\n");
-  if (a !== -1) return a;
-  return buffer.indexOf("\r\n\r\n");
 }
 
 /**

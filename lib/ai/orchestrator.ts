@@ -87,6 +87,8 @@ export class AgentOrchestrator {
       streamResponse?: boolean;
       /** Receives incremental response deltas as they stream. */
       onResponseDelta?: (delta: string) => void;
+      /** Aborts an in-flight streamed response (client cancellation). */
+      signal?: AbortSignal;
     } = {},
   ): Promise<{
     intent: Intent;
@@ -95,6 +97,8 @@ export class AgentOrchestrator {
     response: string;
     status: string;
     limitations: string[];
+    /** Truthful streaming outcome for the assistant message lifecycle. */
+    streamStatus: "COMPLETED" | "PARTIAL" | "CANCELLED";
   }> {
     const limitations: string[] = [];
 
@@ -163,7 +167,7 @@ export class AgentOrchestrator {
     //    context; it never invents results. If no model is available (or the
     //    model fails), we fall back to the honest template response — never a
     //    fabricated model output.
-    const response = await this.composeModelResponse({
+    const modelResult = await this.composeModelResponse({
       workspaceId: input.workspaceId,
       userId: input.userId,
       intent,
@@ -172,7 +176,10 @@ export class AgentOrchestrator {
       limitations,
       streamResponse: options.streamResponse,
       onResponseDelta: options.onResponseDelta,
+      signal: options.signal,
     });
+    const response = modelResult.content;
+    const streamStatus = modelResult.streamStatus;
 
     this.planner.updateStatus(plan.planId, status as TaskPlan["status"]);
 
@@ -191,7 +198,7 @@ export class AgentOrchestrator {
       },
     });
 
-    return { intent, plan, executions, response, status, limitations };
+    return { intent, plan, executions, response, status, limitations, streamStatus };
   }
 
   /**
@@ -397,7 +404,8 @@ export class AgentOrchestrator {
     limitations: string[];
     streamResponse?: boolean;
     onResponseDelta?: (delta: string) => void;
-  }): Promise<string> {
+    signal?: AbortSignal;
+  }): Promise<{ content: string; streamStatus: "COMPLETED" | "PARTIAL" | "CANCELLED" }> {
     const constraints: RoutingConstraints = {
       taskCategory: "GENERAL_CHAT",
       requiredModalities: ["text"],
@@ -410,7 +418,10 @@ export class AgentOrchestrator {
     try {
       decision = this.router.route(constraints);
     } catch {
-      return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+      return {
+        content: this.composeResponse(input.intent, input.plan, input.executions, input.limitations),
+        streamStatus: "COMPLETED",
+      };
     }
 
     // Consent enforcement: external providers require workspace consent.
@@ -419,14 +430,20 @@ export class AgentOrchestrator {
     } catch (e) {
       if (e instanceof ConsentError) {
         input.limitations.push(e.message);
-        return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+        return {
+          content: this.composeResponse(input.intent, input.plan, input.executions, input.limitations),
+          streamStatus: "COMPLETED",
+        };
       }
       throw e;
     }
 
     const adapter = this.providers.adapterFor(decision.providerId);
     if (!adapter) {
-      return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+      return {
+        content: this.composeResponse(input.intent, input.plan, input.executions, input.limitations),
+        streamStatus: "COMPLETED",
+      };
     }
 
     const verified = input.executions.filter((e) => e.status === "VERIFIED");
@@ -462,6 +479,7 @@ export class AgentOrchestrator {
         let streamed = false;
         let content = "";
         let streamError: string | null = null;
+        let cancelled = false;
         // The streaming branch is self-contained: if the stream throws AFTER
         // deltas were emitted, we must NOT fall back to the template.
         try {
@@ -470,6 +488,7 @@ export class AgentOrchestrator {
             modelId: decision.modelId,
             messages: [{ role: "user", content: prompt }],
             taskCategory: "GENERAL_CHAT",
+            signal: input.signal,
           })) {
             if (event.type === "delta" && event.delta) {
               streamed = true;
@@ -482,25 +501,44 @@ export class AgentOrchestrator {
               streamError = event.error?.message ?? "Model stream failed.";
               break;
             } else if (event.type === "cancelled") {
+              cancelled = true;
+              break;
+            }
+            if (input.signal?.aborted) {
+              cancelled = true;
               break;
             }
           }
         } catch (e) {
-          streamError = e instanceof Error ? e.message : "Model stream failed.";
+          if (input.signal?.aborted) {
+            cancelled = true;
+          } else {
+            streamError = e instanceof Error ? e.message : "Model stream failed.";
+          }
         }
 
+        // Client cancelled mid-stream: persist CANCELLED, never fall back.
+        if (cancelled || input.signal?.aborted) {
+          input.limitations.push("Response was cancelled before completion.");
+          return { content, streamStatus: "CANCELLED" };
+        }
         if (streamError && streamed) {
           // Already streamed deltas: NO fallback. Surface partial content
           // honestly; the error is reported via the caller limitations.
           input.limitations.push(`Model stream ended early: ${streamError}`);
-          return content;
+          return { content, streamStatus: "PARTIAL" };
         }
-        if (streamed && content.trim() !== "") return content;
+        if (streamed && content.trim() !== "") {
+          return { content, streamStatus: "COMPLETED" };
+        }
         if (!streamed) {
           // Nothing streamed yet: honest template fallback is safe.
-          return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+          return {
+            content: this.composeResponse(input.intent, input.plan, input.executions, input.limitations),
+            streamStatus: "COMPLETED",
+          };
         }
-        return content;
+        return { content, streamStatus: "COMPLETED" };
       }
 
       const response = await adapter.generate({
@@ -508,14 +546,24 @@ export class AgentOrchestrator {
         modelId: decision.modelId,
         messages: [{ role: "user", content: prompt }],
         taskCategory: "GENERAL_CHAT",
+        signal: input.signal,
       });
 
-      if (response.error || !response.content || response.content.trim() === "") {
-        return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+      if (input.signal?.aborted) {
+        return { content: "", streamStatus: "CANCELLED" };
       }
-      return response.content;
+      if (response.error || !response.content || response.content.trim() === "") {
+        return {
+          content: this.composeResponse(input.intent, input.plan, input.executions, input.limitations),
+          streamStatus: "COMPLETED",
+        };
+      }
+      return { content: response.content, streamStatus: "COMPLETED" };
     } catch {
-      return this.composeResponse(input.intent, input.plan, input.executions, input.limitations);
+      return {
+        content: this.composeResponse(input.intent, input.plan, input.executions, input.limitations),
+        streamStatus: "COMPLETED",
+      };
     }
   }
   private workspaceType(workspaceId: string): string {

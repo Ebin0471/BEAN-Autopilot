@@ -2,7 +2,6 @@ import { getServices } from "@/lib/security/container";
 import { error, requireAuth, unauthorized } from "@/lib/api/http";
 import { z } from "zod";
 import type { CommandOutcome } from "@/lib/commands/gateway";
-import { ConsentError } from "@/lib/ai/consent";
 
 export const dynamic = "force-dynamic";
 
@@ -26,8 +25,13 @@ const ChatSchema = z.object({
  *   - delta:      incremental assistant text (true upstream streaming)
  *   - plan:       the structured proposed plan
  *   - execution:  a command execution receipt (governed)
- *   - complete:   final usage + status
+ *   - complete:   final usage + truthful status
  *   - error:      honest failure
+ *
+ * End-to-end cancellation: if the client disconnects mid-stream, the upstream
+ * request is aborted and the assistant message is persisted with a truthful
+ * CANCELLED / PARTIAL / FAILED / COMPLETED lifecycle status. No fabricated
+ * COMPLETED is recorded for a stream that did not finish.
  *
  * No provider credentials reach the browser; no chain-of-thought is exposed.
  * External-AI workspace consent is enforced server-side before any external
@@ -71,10 +75,16 @@ export async function POST(req: Request) {
   });
 
   const encoder = new TextEncoder();
+  // AbortController for end-to-end cancellation: client disconnect aborts the
+  // in-flight upstream stream so no resources leak and no fabricated COMPLETED
+  // is recorded.
+  const controller = new AbortController();
+  let clientCancelled = false;
+
   const stream = new ReadableStream({
-    async start(controller) {
+    async start(streamController) {
       const send = (event: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        streamController.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
       };
 
       try {
@@ -90,6 +100,7 @@ export async function POST(req: Request) {
             // TRUE upstream streaming: relay provider deltas as they arrive.
             streamResponse: true,
             onResponseDelta: (delta: string) => send({ type: "delta", delta }),
+            signal: controller.signal,
           },
         );
 
@@ -114,7 +125,14 @@ export async function POST(req: Request) {
           });
         }
 
-        // Persist the assistant message.
+        // Persist the assistant message with a TRUTHFUL lifecycle status.
+        const messageStatus =
+          clientCancelled || turn.streamStatus === "CANCELLED"
+            ? "CANCELLED"
+            : turn.streamStatus === "PARTIAL"
+              ? "PARTIAL"
+              : "COMPLETED";
+
         const assistant = services.conversations.appendMessage({
           conversationId: body.conversationId,
           workspaceId: body.workspaceId,
@@ -122,29 +140,29 @@ export async function POST(req: Request) {
           role: "assistant",
           content: turn.response,
           structured: { plan: turn.plan, executions: turn.executions, limitations: turn.limitations },
-          status: "COMPLETED",
+          status: messageStatus,
         });
 
         send({
           type: "complete",
-          status: turn.status,
+          status: messageStatus,
           messageId: assistant.id,
           limitations: turn.limitations,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Chat turn failed";
         const code = (e as { code?: string }).code ?? "CHAT_ERROR";
-        if (e instanceof ConsentError) {
+        if (clientCancelled || controller.signal.aborted) {
           services.conversations.appendMessage({
             conversationId: body.conversationId,
             workspaceId: body.workspaceId,
             userId: auth.userId,
             role: "assistant",
-            content: `I could not complete this turn: ${msg}`,
-            status: "FAILED",
-            errorCode: code,
+            content: "",
+            status: "CANCELLED",
+            errorCode: "CLIENT_CANCELLED",
           });
-          send({ type: "error", code, message: msg });
+          send({ type: "error", code: "CANCELLED", message: "Response was cancelled." });
         } else {
           services.conversations.appendMessage({
             conversationId: body.conversationId,
@@ -158,8 +176,18 @@ export async function POST(req: Request) {
           send({ type: "error", code, message: msg });
         }
       } finally {
-        controller.close();
+        try {
+          streamController.close();
+        } catch {
+          /* already closed */
+        }
       }
+    },
+    cancel() {
+      // Client disconnected: abort the in-flight upstream stream and mark the
+      // turn cancelled so the persisted message is truthful.
+      clientCancelled = true;
+      controller.abort();
     },
   });
 

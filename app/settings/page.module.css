@@ -63,6 +63,24 @@
   background: var(--gold-bright);
 }
 
+.checkList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.checkItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.checkItem input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--gold-bright);
+}
+
 @media (max-width: 760px) {
   .grid {
     grid-template-columns: 1fr;
