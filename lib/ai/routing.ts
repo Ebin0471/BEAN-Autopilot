@@ -69,7 +69,10 @@ export class ModelRouter {
       return true;
     });
 
-    // Provider availability + privacy filter.
+    // Provider availability + privacy filter. Availability is evidence-based:
+    // a model is only routing-eligible when it carries availability evidence
+    // AND its provider is configured + healthy (never assume availability from
+    // registration alone).
     const viable = candidates.filter((m) => {
       const provider = this.providers.get(m.providerId);
       if (!provider) return false;
@@ -78,6 +81,14 @@ export class ModelRouter {
       // in non-production environments only.
       if (isProduction() && provider.adapterType === "test") return false;
       if (!this.providers.isAvailable(m.providerId)) return false;
+      // Health states: a provider that is UNAVAILABLE or FAILING must never be
+      // routed to, even if its availability_status is stale.
+      if (provider.healthStatus === "UNAVAILABLE" || provider.healthStatus === "FAILING") {
+        return false;
+      }
+      // Evidence-based eligibility: the model must carry a non-empty
+      // availability evidence string (how it is known to be available).
+      if (!hasAvailabilityEvidence(m)) return false;
       // Never route private data to a provider of a lower privacy class.
       if (
         constraints.privacyClass &&
@@ -146,6 +157,8 @@ export class ModelRouter {
         if (m.status === "DISABLED") return false;
         if (!m.supportedTasks.includes(constraints.taskCategory)) return false;
         if (!this.providers.isAvailable(m.providerId)) return false;
+        // Evidence-based eligibility in the fallback chain too.
+        if (!hasAvailabilityEvidence(m)) return false;
         if (
           constraints.privacyClass &&
           rankPrivacy(m.privacyClass) < rankPrivacy(constraints.privacyClass)
@@ -173,6 +186,17 @@ function rankPrivacy(p: string): number {
   if (p === "INTERNAL") return 3;
   if (p === "LOCAL") return 2;
   return 1;
+}
+
+/**
+ * Evidence-based eligibility: a model is routing-eligible only when it carries
+ * a non-empty availability evidence string. Registration alone is not enough —
+ * the model must have recorded evidence of how it is available (e.g. a health
+ * check, a gateway projection, a configured endpoint). This prevents routing to
+ * a model whose availability was never substantiated.
+ */
+export function hasAvailabilityEvidence(model: ModelMetadata): boolean {
+  return typeof model.availabilityEvidence === "string" && model.availabilityEvidence.trim() !== "";
 }
 
 export type { TaskCategory, ProviderMetadata };

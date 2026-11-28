@@ -180,3 +180,75 @@ function findEventSeparator(buffer: string): number {
   if (crlf !== -1) return crlf;
   return -1;
 }
+
+/**
+ * A yielded item from the incremental frame iterator.
+ *
+ * - `{ kind: "data", data }`: a complete `data:` frame's payload (raw string,
+ *   before JSON parsing). Yielded as soon as the frame is closed by a blank
+ *   line — this is the basis of GENUINE incremental forwarding: deltas reach
+ *   the consumer the moment they arrive, not after the whole stream is
+ *   buffered.
+ * - `{ kind: "truncated" }`: the hard max-size bound was exceeded. Emitted
+ *   once, then the iterator ends.
+ */
+export type SSEFrameYield =
+  | { kind: "data"; data: string }
+  | { kind: "truncated" };
+
+/**
+ * Incrementally iterate the `data:` frames of an SSE byte stream, yielding
+ * each frame's raw payload as soon as it is complete.
+ *
+ * Unlike {@link parseSSEStream} (which buffers the entire response), this
+ * generator forwards frames the moment a blank line closes an event block.
+ * Adapters use this for genuine incremental SSE forwarding: each delta is
+ * relayed to the caller immediately rather than after the full response has
+ * been accumulated.
+ *
+ * Handles: arbitrary chunk boundaries, CRLF/LF, keepalive/comment frames
+ * (ignored), and the max-size bound. The caller interprets each frame
+ * (BEAN `delta`/`done`/`error` vs OpenAI `choices`/`[DONE]`/`usage`).
+ */
+export async function* iterateSSEFrames(
+  chunks: AsyncIterable<Uint8Array>,
+  signal?: AbortSignal,
+  options: SSEParserOptions = {},
+): AsyncGenerator<SSEFrameYield> {
+  const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
+  const decoder = new TextDecoder();
+
+  let buffer = "";
+  let bytes = 0;
+
+  for await (const chunk of chunks) {
+    if (signal?.aborted) return;
+    bytes += chunk.length;
+    if (bytes > maxBytes) {
+      // Hard bound exceeded: emit a truncation marker and stop. Any frames
+      // already yielded stand as partial content; the response is not
+      // trustworthy as complete.
+      yield { kind: "truncated" };
+      return;
+    }
+    buffer += decoder.decode(chunk, { stream: true });
+
+    let sepIndex: number;
+    while ((sepIndex = findEventSeparator(buffer)) !== -1) {
+      const block = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 1);
+      const data = parseEventBlock(block);
+      if (data != null) {
+        yield { kind: "data", data };
+      }
+    }
+  }
+
+  // Flush any trailing partial frame (stream ended without a final blank line).
+  if (buffer.trim() !== "") {
+    const data = parseEventBlock(buffer);
+    if (data != null) {
+      yield { kind: "data", data };
+    }
+  }
+}
