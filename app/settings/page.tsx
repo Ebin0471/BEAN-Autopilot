@@ -43,6 +43,9 @@ function Field({
 interface ConsentState {
   externalAiAllowed: boolean;
   allowedExternalProviderIds: string[];
+  /** Effective usability: true only when consent is granted AND the allowlist
+   *  is non-empty (matches assertProviderAllowed fail-closed semantics). */
+  externalAiUsable: boolean;
   consentedAt: string | null;
 }
 
@@ -59,38 +62,24 @@ export default function SettingsPage() {
   const [notifications, setNotifications] = useState(true);
   const [approvalPings, setApprovalPings] = useState(true);
 
-  // External-AI consent (Area 4): authorised, workspace-scoped, audited.
+  // External-AI consent (Area 4 + CORE-03G.2 finding #3): authorised,
+  // workspace-scoped, audited. Workspace-keyed loading with a stale-response
+  // guard so an old in-flight response can never overwrite a newer workspace's
+  // state.
   const [session, setSession] = useState<{ workspaces: { id: string; kind: string; name: string }[] } | null>(null);
   const [consent, setConsent] = useState<ConsentState | null>(null);
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [consentBusy, setConsentBusy] = useState(false);
   const [consentError, setConsentError] = useState<string | null>(null);
-  const consentLoadedRef = useRef(false);
+  // Generation counter: incremented on every workspace switch so stale
+  // in-flight load/update responses are discarded.
+  const consentGenRef = useRef(0);
 
   // Resolve the real workspace id from the session, matching the selected kind.
   const workspaceId =
     session?.workspaces.find((w) => w.kind.toLowerCase() === workspace)?.id ??
     session?.workspaces[0]?.id ??
     null;
-
-  const refreshConsent = useCallback(async () => {
-    if (!workspaceId) return;
-    try {
-      const res = await fetch(`/api/ai/consent?workspaceId=${workspaceId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setConsent({
-          externalAiAllowed: data.consent?.externalAiAllowed ?? false,
-          allowedExternalProviderIds: data.consent?.allowedExternalProviderIds ?? [],
-          consentedAt: data.consent?.consentedAt ?? null,
-        });
-        setProviders(data.providers ?? []);
-        setConsentError(null);
-      }
-    } catch {
-      setConsentError("Could not load external-AI consent.");
-    }
-  }, [workspaceId]);
 
   useEffect(() => {
     fetch("/api/auth/session")
@@ -99,15 +88,47 @@ export default function SettingsPage() {
       .catch(() => setSession(null));
   }, []);
 
+  // Load consent whenever the resolved workspace id changes. Each load gets a
+  // generation number; only the latest generation may apply its result.
   useEffect(() => {
-    if (!workspaceId || consentLoadedRef.current) return;
-    consentLoadedRef.current = true;
-    refreshConsent();
-  }, [workspaceId, refreshConsent]);
+    if (!workspaceId) {
+      consentGenRef.current++;
+      setConsent(null);
+      setProviders([]);
+      setConsentError(null);
+      setConsentBusy(false);
+      return;
+    }
+    const gen = ++consentGenRef.current;
+    setConsent(null); // show loading for the newly selected workspace
+    setConsentError(null);
+    setConsentBusy(false);
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/consent?workspaceId=${workspaceId}`);
+        if (gen !== consentGenRef.current) return; // stale: workspace switched
+        if (res.ok) {
+          const data = await res.json();
+          if (gen !== consentGenRef.current) return; // stale
+          setConsent({
+            externalAiAllowed: data.consent?.externalAiAllowed ?? false,
+            allowedExternalProviderIds: data.consent?.allowedExternalProviderIds ?? [],
+            externalAiUsable: data.consent?.externalAiUsable ?? false,
+            consentedAt: data.consent?.consentedAt ?? null,
+          });
+          setProviders(data.providers ?? []);
+        }
+      } catch {
+        if (gen !== consentGenRef.current) return; // stale
+        setConsentError("Could not load external-AI consent.");
+      }
+    })();
+  }, [workspaceId]);
 
   const updateConsent = useCallback(
     async (next: { externalAiAllowed: boolean; allowedExternalProviderIds: string[] }) => {
       if (!workspaceId) return;
+      const gen = consentGenRef.current; // capture current generation
       setConsentBusy(true);
       setConsentError(null);
       try {
@@ -116,20 +137,24 @@ export default function SettingsPage() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(next),
         });
+        if (gen !== consentGenRef.current) return; // stale: workspace switched
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error ?? "Consent update failed.");
         }
         const data = await res.json();
+        if (gen !== consentGenRef.current) return; // stale
         setConsent({
           externalAiAllowed: data.consent.externalAiAllowed,
           allowedExternalProviderIds: data.consent.allowedExternalProviderIds,
+          externalAiUsable: data.consent.externalAiUsable ?? false,
           consentedAt: data.consent.consentedAt,
         });
       } catch (e) {
+        if (gen !== consentGenRef.current) return; // stale
         setConsentError(e instanceof Error ? e.message : "Consent update failed.");
       } finally {
-        setConsentBusy(false);
+        if (gen === consentGenRef.current) setConsentBusy(false);
       }
     },
     [workspaceId],
@@ -142,7 +167,6 @@ export default function SettingsPage() {
       : consent.allowedExternalProviderIds.filter((id) => id !== providerId);
     updateConsent({ externalAiAllowed: consent.externalAiAllowed, allowedExternalProviderIds: allowed });
   };
-
   return (
     <main className="page">
       <PageHeader
@@ -204,7 +228,7 @@ export default function SettingsPage() {
             <p className="dim">No workspace session available — consent is managed per workspace.</p>
           ) : consent ? (
             <>
-              <Field label="Allow external AI" desc="Permit any allowlisted external provider.">
+              <Field label="Allow external AI" desc="Grant consent. External AI is only usable when at least one provider is allowlisted.">
                 <Toggle
                   on={consent.externalAiAllowed}
                   onChange={(v) => updateConsent({ externalAiAllowed: v, allowedExternalProviderIds: consent.allowedExternalProviderIds })}
@@ -233,6 +257,15 @@ export default function SettingsPage() {
                 </div>
               )}
 
+              {consent.externalAiUsable ? (
+                <p className="dim">External AI is usable for the allowlisted providers above.</p>
+              ) : (
+                <p className="dim">
+                  External AI is not usable: {consent.externalAiAllowed
+                    ? "no providers are allowlisted — add at least one provider to enable external AI."
+                    : "consent has not been granted."}
+                </p>
+              )}
               <p className="dim">
                 {consent.consentedAt ? `Last updated ${new Date(consent.consentedAt).toLocaleString()}` : "Not yet consented."}
               </p>

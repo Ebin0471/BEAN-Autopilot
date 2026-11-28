@@ -75,17 +75,7 @@ export class ModelRouter {
     // registration alone).
     const viable = candidates.filter((m) => {
       const provider = this.providers.get(m.providerId);
-      if (!provider) return false;
-      // Production restriction: the deterministic test provider never serves
-      // production traffic. It exists to exercise the pipeline out of the box
-      // in non-production environments only.
-      if (isProduction() && provider.adapterType === "test") return false;
-      if (!this.providers.isAvailable(m.providerId)) return false;
-      // Health states: a provider that is UNAVAILABLE or FAILING must never be
-      // routed to, even if its availability_status is stale.
-      if (provider.healthStatus === "UNAVAILABLE" || provider.healthStatus === "FAILING") {
-        return false;
-      }
+      if (!this.providerEligible(provider)) return false;
       // Evidence-based eligibility: the model must carry a non-empty
       // availability evidence string (how it is known to be available).
       if (!hasAvailabilityEvidence(m)) return false;
@@ -156,7 +146,7 @@ export class ModelRouter {
       .filter((m) => {
         if (m.status === "DISABLED") return false;
         if (!m.supportedTasks.includes(constraints.taskCategory)) return false;
-        if (!this.providers.isAvailable(m.providerId)) return false;
+        if (!this.providerEligible(this.providers.get(m.providerId))) return false;
         // Evidence-based eligibility in the fallback chain too.
         if (!hasAvailabilityEvidence(m)) return false;
         if (
@@ -173,6 +163,23 @@ export class ModelRouter {
         if (constraints.requireReasoning && !m.reasoning) return false;
         return true;
       });
+  }
+
+  /**
+   * Shared provider-eligibility check for primary routing AND fallback
+   * chaining. A provider is eligible only when it exists, is not the
+   * production-restricted test provider, is available, and is not in a
+   * FAILING / UNAVAILABLE health state. Registration alone is never enough —
+   * a stale availability_status cannot override a failing health state.
+   */
+  private providerEligible(provider: ProviderMetadata | null): boolean {
+    if (!provider) return false;
+    if (isProduction() && provider.adapterType === "test") return false;
+    if (!this.providers.isAvailable(provider.providerId)) return false;
+    if (provider.healthStatus === "UNAVAILABLE" || provider.healthStatus === "FAILING") {
+      return false;
+    }
+    return true;
   }
 }
 

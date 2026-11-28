@@ -30,10 +30,15 @@ const PatchSchema = z.object({
 });
 
 function publicConsent(c: WorkspaceAiConsent) {
+  // Effective usability: external AI is only usable when consent is granted AND
+  // at least one provider is explicitly allowlisted. An empty allowlist is NOT
+  // usable, matching assertProviderAllowed fail-closed semantics.
+  const externalAiUsable = c.externalAiAllowed && c.allowedExternalProviderIds.length > 0;
   return {
     workspaceId: c.workspaceId,
     externalAiAllowed: c.externalAiAllowed,
     allowedExternalProviderIds: c.allowedExternalProviderIds,
+    externalAiUsable,
     consentVersion: c.consentVersion,
     consentedBy: c.consentedBy,
     consentedAt: c.consentedAt,
