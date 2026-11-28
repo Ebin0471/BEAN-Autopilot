@@ -21,6 +21,24 @@
   padding: 4px 6px 0;
 }
 
+.closeBtn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-left: auto;
+  flex-shrink: 0;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.closeBtn:hover {
+  color: var(--gold-bright);
+  border-color: var(--gold-line);
+}
+
 .logoMark {
   display: grid;
   place-items: center;
@@ -49,7 +67,7 @@
 
 .workspaceLabel {
   display: block;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-dim);
@@ -90,7 +108,7 @@
 .workspaceBlurb {
   display: block;
   margin-top: 8px;
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--text-dim);
   padding: 0 2px;
 }
@@ -107,6 +125,7 @@
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
+  min-height: 44px;
   border-radius: var(--r-md);
   color: var(--text-muted);
   font-size: 14px;
@@ -134,18 +153,21 @@
   gap: 3px;
 }
 .footTag {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--gold);
   letter-spacing: 0.04em;
 }
 .footNote {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-dim);
 }
 
 /* mobile: drawer */
 @media (max-width: 860px) {
+  .closeBtn {
+    display: inline-flex;
+  }
   .sidebar {
     position: fixed;
     z-index: 50;

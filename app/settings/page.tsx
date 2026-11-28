@@ -59,6 +59,21 @@ export default function SettingsPage() {
   const { workspace, setWorkspace } = useWorkspace();
   const [reduceMotion, setReduceMotion] = useState(true);
   const [highContrast, setHighContrast] = useState(false);
+
+  // The display switches below genuinely adjust this view (document-level
+  // attributes consumed by globals.css). They are local only — nothing is
+  // saved or enforced by a backend.
+  useEffect(() => {
+    const el = document.documentElement;
+    if (reduceMotion) el.setAttribute("data-motion", "reduced");
+    else el.removeAttribute("data-motion");
+  }, [reduceMotion]);
+
+  useEffect(() => {
+    const el = document.documentElement;
+    if (highContrast) el.setAttribute("data-contrast", "high");
+    else el.removeAttribute("data-contrast");
+  }, [highContrast]);
   const [notifications, setNotifications] = useState(true);
   const [approvalPings, setApprovalPings] = useState(true);
 
@@ -177,8 +192,9 @@ export default function SettingsPage() {
       />
 
       <DemoNote>
-        UI preferences below adjust the <strong>local shell</strong>. External-AI consent is
-        enforced server-side, workspace-scoped and recorded in the append-only audit log.
+        The display preferences below change <strong>this view only</strong> — they are not saved and
+        do not change how Autopilot works. External-AI consent is different: it is enforced
+        server-side, scoped to your workspace and recorded in the audit log.
       </DemoNote>
 
       <div className={`${styles.grid} ${styles.mt}`}>
@@ -201,7 +217,7 @@ export default function SettingsPage() {
           <Field label="Task notifications" desc="Notify on task state changes.">
             <Toggle on={notifications} onChange={setNotifications} />
           </Field>
-          <Field label="Approval pings" desc="Notify when approval is required (R3+).">
+          <Field label="Approval pings" desc="Notify when an action needs your approval.">
             <Toggle on={approvalPings} onChange={setApprovalPings} />
           </Field>
         </section>
@@ -219,9 +235,9 @@ export default function SettingsPage() {
         <section className="card">
           <p className="card-title"><Icon name="key" size={15} /> External AI consent</p>
           <p className="dim">
-            External AI providers send data outside the workspace trust boundary. Consent is
-            required before any external provider is used, and is enforced server-side
-            (fail-closed). Changes are recorded in the audit log.
+            External AI providers send your data outside this workspace. Consent is required before
+            any external provider is used, and is enforced by the server (fail-closed). Changes are
+            recorded in the audit log.
           </p>
 
           {!workspaceId ? (
@@ -283,9 +299,12 @@ export default function SettingsPage() {
             stored or requested. Full data, retention and deletion controls arrive with the
             backend milestone.
           </p>
-          <button type="button" className="btn btn-sm" disabled title="Backend feature not present in UI-01">
-            Manage data (not available in UI-01)
+          <button type="button" className="btn btn-sm" disabled title="Not available in this frontend yet">
+            Manage data
           </button>
+          <p className="dim" style={{ fontSize: 12.5, marginTop: 10 }}>
+            Data, retention and deletion controls are not part of this frontend yet.
+          </p>
         </section>
       </div>
     </main>

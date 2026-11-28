@@ -39,7 +39,7 @@ export default function ActivityPage() {
       </DemoNote>
 
       <section className="card" style={{ marginBottom: 22 }}>
-        <p className="card-title"><Icon name="route" size={15} /> Command lifecycle (CORE-02)</p>
+        <p className="card-title"><Icon name="route" size={15} /> Command lifecycle</p>
         <p className="card-sub">{COMMAND_CATALOGUE.length} registered commands route through one governed gateway.</p>
         <div className={styles.meta}>
           <span><Icon name="zap" size={13} /> {COMMAND_CATALOGUE.length} commands registered</span>
@@ -47,11 +47,11 @@ export default function ActivityPage() {
         </div>
       </section>
 
-      <div className={styles.timeline}>
+      <ul className={styles.timeline}>
         {ACTIVITY.map((a) => {
           const meta = STATE_META[a.state];
           return (
-            <div key={a.id} className={styles.entry}>
+            <li key={a.id} className={styles.entry}>
               <span className={styles.dot} style={{ background: meta.dot }} />
               <div className={styles.entryBody}>
                 <div className="row-between wrap">
@@ -68,10 +68,10 @@ export default function ActivityPage() {
                   <span className="dim"><Icon name="files" size={13} /> {a.evidence}</span>
                 </div>
               </div>
-            </div>
+            </li>
           );
         })}
-      </div>
+      </ul>
     </main>
   );
 }

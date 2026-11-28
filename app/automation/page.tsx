@@ -184,7 +184,7 @@ export default function AutomationPage() {
       <PageHeader
         eyebrow="Automation Studio"
         title="Node-based workflow editor"
-        sub="Describe a workflow in chat, or build and modify it visually. UI-01 delivers the visual editor shell and basic interactions — production automation execution is not implemented."
+        sub="Build and modify workflows visually. This is an editor shell — save, test and activate change local UI state only; workflows are not executed by any backend."
         icon="automation"
       />
 
@@ -196,7 +196,7 @@ export default function AutomationPage() {
       <div className={styles.layout}>
         {/* palette */}
         <aside className={styles.palette}>
-          <p className="field-label">Node palette</p>
+          <p className="field-label">Add a node</p>
           <div className={styles.paletteGrid}>
             {PALETTE.map((p) => (
               <button key={p.kind} type="button" className={styles.paletteBtn} onClick={() => addNode(p.kind)}>
@@ -206,7 +206,7 @@ export default function AutomationPage() {
             ))}
           </div>
           <hr className="divider" />
-          <p className="field-label">Command palette (registered)</p>
+          <p className="field-label">Add a command</p>
           <div className={styles.paletteGrid}>
             {COMMAND_CATALOGUE.map((c) => (
               <button
@@ -222,7 +222,7 @@ export default function AutomationPage() {
               </button>
             ))}
           </div>
-          <p className={`dim ${styles.mini}`}>Commands are the real registered catalogue. Activation stays unavailable until a real execution engine exists.</p>
+          <p className={`dim ${styles.mini}`}>These are the real registered commands. Workflows are not executed by a backend yet.</p>
           <hr className="divider" />
           <p className="field-label">Workflow state</p>
           <span className={`badge ${status === "active" ? "badge-success" : status === "saved" ? "badge-info" : "badge-warning"}`}>

@@ -8,12 +8,21 @@ import { NAV_ITEMS, WORKSPACES } from "@/lib/data";
 import type { WorkspaceKind } from "@/lib/types";
 import styles from "./Sidebar.module.css";
 
-export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+export function Sidebar({
+  open,
+  onNavigate,
+}: {
+  open?: boolean;
+  onNavigate?: () => void;
+}) {
   const pathname = usePathname();
   const { workspace, setWorkspace } = useWorkspace();
 
   return (
-    <aside className={styles.sidebar} aria-label="Primary navigation">
+    <aside
+      className={`${styles.sidebar} ${open ? styles.sidebarOpen : ""}`}
+      aria-label="Primary navigation"
+    >
       <div className={styles.brand}>
         <span className={styles.logoMark}>
           <Icon name="bean" size={20} strokeWidth={1.7} />
@@ -21,6 +30,16 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <span className={styles.brandText}>
           <strong>BEAN</strong> Autopilot
         </span>
+        {onNavigate && (
+          <button
+            type="button"
+            className={styles.closeBtn}
+            onClick={onNavigate}
+            aria-label="Close navigation"
+          >
+            <Icon name="x" size={18} />
+          </button>
+        )}
       </div>
 
       <div className={styles.workspaceBlock}>
@@ -41,7 +60,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </button>
           ))}
         </div>
-        <span className={styles.workspaceBlurb}>{WORKSPACES.find((w) => w.id === workspace)?.blurb}</span>
+        <span className={styles.workspaceBlurb}>
+          {WORKSPACES.find((w) => w.id === workspace)?.blurb}
+        </span>
       </div>
 
       <nav className={styles.nav}>
@@ -63,8 +84,8 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className={styles.foot}>
-        <span className={styles.footTag}>UI-01 · Foundation</span>
-        <span className={styles.footNote}>UI shell — no backend execution yet</span>
+        <span className={styles.footTag}>Frontend demo</span>
+        <span className={styles.footNote}>No backend execution in this view</span>
       </div>
     </aside>
   );

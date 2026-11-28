@@ -35,8 +35,8 @@
 }
 
 .toggle {
-  width: 46px;
-  height: 26px;
+  width: 58px;
+  height: 32px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
   background: var(--bg-input);
@@ -52,14 +52,14 @@
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: var(--text-muted);
   transition: transform var(--t-base), background var(--t-fast);
 }
 .toggleOn .toggleKnob {
-  transform: translateX(20px);
+  transform: translateX(26px);
   background: var(--gold-bright);
 }
 
@@ -76,8 +76,8 @@
   font-size: 13px;
 }
 .checkItem input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   accent-color: var(--gold-bright);
 }
 

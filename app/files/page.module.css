@@ -59,6 +59,17 @@
 }
 @media (max-width: 900px) {
   .layout {
+    grid-template-columns: 1fr 1fr;
+  }
+  .layout > section:last-child {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 620px) {
+  .layout {
     grid-template-columns: 1fr;
+  }
+  .layout > section:last-child {
+    grid-column: auto;
   }
 }
