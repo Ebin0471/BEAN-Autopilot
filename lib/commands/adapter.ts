@@ -14,6 +14,14 @@ export interface AdapterPrepareContext {
   args: Record<string, unknown>;
   targetType?: string;
   targetId?: string;
+  /**
+   * Optional cooperative-cancellation signal. The gateway aborts it when the
+   * effective timeout for this phase elapses (or the caller cancels). Adapters
+   * that can observe cancellation should listen for "abort" and stop; the
+   * gateway never assumes the adapter stopped merely because the phase timed
+   * out.
+   */
+  signal?: AbortSignal;
 }
 
 export interface AdapterExecuteContext extends AdapterPrepareContext {

@@ -486,7 +486,10 @@ describe("CORE-02 execution lifecycle", () => {
     };
     env.services.commands.register(def, owner.userId);
     const adapter = new TestCommandAdapter({ adapterId: "no-evidence", supportedCommands: ["browser.open"] });
-    adapter.executeResult = { success: true, output: { ok: true } }; // no evidence
+    adapter.executeResult = { success: true, output: { ok: true } }; // execution output only
+    // CORE-04A: verification is authoritative via adapter.verify(). An adapter
+    // that cannot confirm the outcome (verified:false) must NOT be VERIFIED.
+    adapter.verifyResult = { verified: false, evidence: {}, reason: "No verification evidence" };
     env.services.gateway.registerAdapter(adapter);
 
     const outcome = await env.services.gateway.submit(

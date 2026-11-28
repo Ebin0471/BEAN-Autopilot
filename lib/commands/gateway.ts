@@ -1,5 +1,5 @@
 import type { Db } from "@/lib/db/database";
-import { computeBindingHash, canonicalBinding, IdempotencyConflictError } from "./canonical";
+import { computeBindingHash, canonicalBinding, canonicalize, IdempotencyConflictError } from "./canonical";
 import { AuditService } from "@/lib/security/audit";
 import { PolicyEngine, AuthorizationError } from "@/lib/security/policy";
 import { RiskClassifier } from "@/lib/security/risk";
@@ -19,6 +19,20 @@ export class GatewayError extends Error {
   constructor(message: string, public code = "GATEWAY_ERROR") {
     super(message);
     this.name = "GatewayError";
+  }
+}
+
+/**
+ * Raised when a gateway-bounded execution phase (prepare / execute / verify)
+ * exceeds its effective timeout. The gateway aborts the phase's AbortSignal so
+ * a cooperative adapter can stop, but it never assumes the adapter actually
+ * stopped — an uncertain external side effect is recorded as an honest
+ * unresolved (PARTIAL) outcome, never as a success.
+ */
+export class PhaseTimeoutError extends Error {
+  constructor(public phase: "prepare" | "execute" | "verify", public ms: number) {
+    super(`${phase} phase timed out after ${ms}ms`);
+    this.name = "PhaseTimeoutError";
   }
 }
 
@@ -266,7 +280,15 @@ export class CommandGateway {
     return this.execute(execution.id, command, capabilityId, actor, request, args, paramsHash, passport.id);
   }
 
-  /** Execute an authorised command (internal registry ops or a registered adapter). */
+  /**
+   * Execute an authorised command (internal registry ops or a registered
+   * adapter). Adapter-backed commands follow:
+   *   VALIDATE → AUTHORISE → PREPARE → EXECUTE → VERIFY → VERIFIED / PARTIAL / FAILED
+   * where VERIFY is the adapter's authoritative `verify()` result — never
+   * `Boolean(result.evidence)`. Each phase is bounded by the effective timeout
+   * `min(command.timeoutPolicy.maxSeconds, adapter.timeoutSeconds)` and uses
+   * cooperative cancellation through an AbortSignal.
+   */
   private async execute(
     executionId: string,
     command: CommandDefinition,
@@ -289,9 +311,32 @@ export class CommandGateway {
         targetId: request.targetId ?? "none",
         paramHash: paramsHash,
       });
-    } catch (e) {
+    } catch {
       this.lifecycle.transition(executionId, "FAILED", { errorCode: "PASSPORT_INVALID" });
-      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", (e as Error).message, "PASSPORT_INVALID");
+      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", "Passport validation failed", "PASSPORT_INVALID");
+    }
+
+    // Resolve the adapter and enforce the declared verification capability
+    // BEFORE execution. A required verification method the adapter cannot
+    // provide fails closed here, before any external side effect.
+    let adapter: CommandAdapter | undefined;
+    let effectiveMs: number | null = null;
+    if (capabilityId) {
+      adapter = this.findAdapter(command.commandId);
+      if (!adapter) {
+        this.lifecycle.transition(executionId, "FAILED", { errorCode: "ADAPTER_UNAVAILABLE" });
+        return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", "No adapter registered for capability", "ADAPTER_UNAVAILABLE");
+      }
+      effectiveMs = this.effectiveTimeoutMs(command, adapter);
+      if (effectiveMs === null) {
+        this.lifecycle.transition(executionId, "FAILED", { errorCode: "TIMEOUT_INVALID" });
+        return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", "Command or adapter timeout is not a positive value", "TIMEOUT_INVALID");
+      }
+      if (this.requiresVerification(command) && !adapter.supportsVerification) {
+        this.lifecycle.transition(executionId, "FAILED", { errorCode: "VERIFICATION_UNSUPPORTED" });
+        this.auditVerification(actor, executionId, command, "VERIFICATION_UNSUPPORTED", "pre-execution");
+        return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", "Adapter cannot provide the required verification", "VERIFICATION_UNSUPPORTED");
+      }
     }
 
     this.lifecycle.transition(executionId, "VALIDATED");
@@ -299,54 +344,84 @@ export class CommandGateway {
     this.lifecycle.transition(executionId, "READY");
     this.lifecycle.transition(executionId, "RUNNING", { adapterId: capabilityId ?? "internal" });
 
+    const capability = capabilityId ? this.capabilities.get(capabilityId) ?? null : null;
+    const baseCtx = {
+      workspaceId: actor.workspaceId,
+      command,
+      capability,
+      args,
+      targetType: request.targetType,
+      targetId: request.targetId,
+    };
+
     let result: AdapterResult;
-    try {
-      if (capabilityId) {
-        const adapter = this.findAdapter(command.commandId);
-        if (!adapter) {
-          this.lifecycle.transition(executionId, "FAILED", { errorCode: "ADAPTER_UNAVAILABLE" });
-          return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", "No adapter registered for capability", "ADAPTER_UNAVAILABLE");
-        }
-        await adapter.prepare({
-          workspaceId: actor.workspaceId,
-          command,
-          capability: this.capabilities.get(capabilityId) ?? null,
-          args,
-          targetType: request.targetType,
-          targetId: request.targetId,
-        });
-        result = await adapter.execute({
-          workspaceId: actor.workspaceId,
-          command,
-          capability: this.capabilities.get(capabilityId) ?? null,
-          args,
-          targetType: request.targetType,
-          targetId: request.targetId,
-          passportId,
-          paramsHash,
-        });
-      } else {
-        result = this.executeInternal(command, actor, args, request);
+    if (capabilityId && adapter && effectiveMs !== null) {
+      // PREPARE (bounded). A prepare timeout must prevent execution from
+      // beginning; the external outcome is uncertain so it is recorded as an
+      // honest unresolved PARTIAL, never a success.
+      try {
+        await this.withTimeout((signal) => adapter!.prepare({ ...baseCtx, signal }), effectiveMs, "prepare");
+      } catch (e) {
+        return this.phaseFailure(executionId, command, riskClass, capabilityId, passport, paramsHash, actor, "prepare", e);
       }
-    } catch (e) {
-      this.lifecycle.transition(executionId, "FAILED", { errorCode: "EXECUTION_ERROR" });
-      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", (e as Error).message, "EXECUTION_ERROR");
+      // EXECUTE (bounded).
+      try {
+        result = await this.withTimeout((signal) => adapter!.execute({ ...baseCtx, passportId, paramsHash, signal }), effectiveMs, "execute");
+      } catch (e) {
+        return this.phaseFailure(executionId, command, riskClass, capabilityId, passport, paramsHash, actor, "execute", e);
+      }
+    } else {
+      result = this.executeInternal(command, actor, args, request);
     }
 
     if (!result.success) {
       this.lifecycle.transition(executionId, "FAILED", { errorCode: result.errorCode ?? "EXECUTION_FAILED", result: result.output });
-      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", result.errorCode ?? "Execution failed", result.errorCode ?? "EXECUTION_FAILED", result.output);
+      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "FAILED", "Execution failed", result.errorCode ?? "EXECUTION_FAILED", result.output);
     }
 
-    // 12. Verify result.
+    // VERIFY (bounded). Adapter-backed commands use the adapter's authoritative
+    // verify() decision; internal commands use result_validation only.
     this.lifecycle.transition(executionId, "VERIFYING");
-    const verified = this.verifyResult(command, result, capabilityId, executionId);
-    if (verified.verified) {
-      this.lifecycle.transition(executionId, "VERIFIED", { result: result.output, evidence: verified.evidence });
-      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "VERIFIED", "Command verified", undefined, result.output, verified.evidence);
+    if (!capabilityId || !adapter || effectiveMs === null) {
+      if (result.success) {
+        this.lifecycle.transition(executionId, "VERIFIED", { result: result.output, evidence: { type: "result_validation", executionId } });
+        return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "VERIFIED", "Command verified", undefined, result.output, { type: "result_validation", executionId });
+      }
+      this.lifecycle.transition(executionId, "PARTIAL", { result: result.output, errorCode: "VERIFICATION_FAILED" });
+      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "PARTIAL", "Internal command did not succeed", "VERIFICATION_FAILED", result.output, null);
     }
-    this.lifecycle.transition(executionId, "PARTIAL", { result: result.output, evidence: verified.evidence, errorCode: "VERIFICATION_FAILED" });
-    return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "PARTIAL", verified.reason ?? "Verification failed", "VERIFICATION_FAILED", result.output, verified.evidence);
+
+    // A manual-verification contract must never silently become an automatic
+    // VERIFIED result.
+    if (command.verificationContract.type === "manual") {
+      this.lifecycle.transition(executionId, "PARTIAL", { result: result.output, errorCode: "VERIFICATION_MANUAL_REQUIRED" });
+      this.auditVerification(actor, executionId, command, "VERIFICATION_MANUAL_REQUIRED", "verify");
+      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "PARTIAL", "Manual verification is required; automatic verification not claimed", "VERIFICATION_MANUAL_REQUIRED", result.output, null);
+    }
+
+    try {
+      const verification = await this.withTimeout((signal) => adapter!.verify({ ...baseCtx, passportId, paramsHash, signal }, result), effectiveMs, "verify");
+      const evidence = verification.evidence;
+      if (!verification.verified) {
+        const stored = isPlainObject(evidence) ? evidence : null;
+        this.lifecycle.transition(executionId, "PARTIAL", { result: result.output, evidence: stored, errorCode: "VERIFICATION_FAILED" });
+        this.auditVerification(actor, executionId, command, "VERIFICATION_FAILED", "verify");
+        return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "PARTIAL", verification.reason ?? "Adapter verification reported not verified", "VERIFICATION_FAILED", result.output, stored);
+      }
+      if (!isValidVerificationEvidence(evidence)) {
+        this.lifecycle.transition(executionId, "PARTIAL", { result: result.output, evidence: null, errorCode: "VERIFICATION_EVIDENCE_INVALID" });
+        this.auditVerification(actor, executionId, command, "VERIFICATION_EVIDENCE_INVALID", "verify");
+        return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "PARTIAL", "Verification evidence is missing, empty or malformed", "VERIFICATION_EVIDENCE_INVALID", result.output, null);
+      }
+      this.lifecycle.transition(executionId, "VERIFIED", { result: result.output, evidence });
+      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "VERIFIED", "Command verified", undefined, result.output, evidence);
+    } catch (e) {
+      const timedOut = e instanceof PhaseTimeoutError;
+      const code = timedOut ? "VERIFICATION_TIMEOUT" : "VERIFICATION_ERROR";
+      this.lifecycle.transition(executionId, "PARTIAL", { result: result.output, errorCode: code });
+      this.auditVerification(actor, executionId, command, code, "verify");
+      return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "PARTIAL", timedOut ? "Verification timed out" : "Verification could not complete", code, result.output, null);
+    }
   }
 
   /* ---------------- Internal execution for built-in commands ---------------- */
@@ -396,22 +471,113 @@ export class CommandGateway {
     }
   }
 
-  private verifyResult(
-    command: CommandDefinition,
-    result: AdapterResult,
-    capabilityId: string | null,
+  /* ---------------- Verification & timeout helpers ---------------- */
+
+  /**
+   * Whether the command requires automatic verification. A `manual` contract
+   * without an independent check does not require automatic verification (and
+   * must never be reported as auto-verified); any other contract type, or an
+   * independent check, does.
+   */
+  private requiresVerification(command: CommandDefinition): boolean {
+    const c = command.verificationContract;
+    return c.type !== "manual" || c.independentCheck;
+  }
+
+  /**
+   * Effective bounded execution time in ms: the stricter valid limit of the
+   * command's timeout policy and the adapter's declared timeout. Returns null
+   * when either value is not a positive finite number (validated before use).
+   */
+  private effectiveTimeoutMs(command: CommandDefinition, adapter: CommandAdapter): number | null {
+    const a = command.timeoutPolicy.maxSeconds;
+    const b = adapter.timeoutSeconds;
+    if (!isPositiveNumber(a) || !isPositiveNumber(b)) return null;
+    return Math.min(a, b) * 1000;
+  }
+
+  /**
+   * Run a phase promise under a bounded timeout. On timeout the phase's
+   * AbortSignal is aborted (so a cooperative adapter can observe cancellation)
+   * and the promise rejects with a PhaseTimeoutError. Timers are cleaned up on
+   * every completion path. The gateway never assumes the adapter stopped just
+   * because the phase timed out.
+   */
+  private withTimeout<T>(
+    op: (signal: AbortSignal) => Promise<T>,
+    ms: number,
+    phase: "prepare" | "execute" | "verify",
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const controller = new AbortController();
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        controller.abort();
+        reject(new PhaseTimeoutError(phase, ms));
+      }, ms);
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      Promise.resolve()
+        .then(() => op(controller.signal))
+        .then(
+          (value) => finish(() => resolve(value)),
+          (err) => finish(() => reject(err)),
+        );
+    });
+  }
+
+  /**
+   * Honest unresolved outcome for a prepare/execute phase that failed or
+   * timed out. The external outcome is uncertain, so it is recorded as PARTIAL
+   * (never a false success) with a stable, specific error code. No automatic
+   * retry is attempted.
+   */
+  private phaseFailure(
     executionId: string,
-  ): { verified: boolean; evidence: Record<string, unknown>; reason?: string } {
-    if (!capabilityId) {
-      if (result.success) return { verified: true, evidence: { type: "result_validation", executionId } };
-      return { verified: false, evidence: {}, reason: "Internal command did not succeed" };
-    }
-    // Adapter-backed: rely on the evidence the adapter attached per its contract.
-    return {
-      verified: Boolean(result.evidence),
-      evidence: result.evidence ?? {},
-      reason: result.evidence ? undefined : "No verification evidence",
-    };
+    command: CommandDefinition,
+    riskClass: RiskClass,
+    capabilityId: string | null,
+    passport: { id: string; status: PassportState } | null | undefined,
+    paramsHash: string,
+    actor: { userId: string; workspaceId: string },
+    phase: "prepare" | "execute",
+    err: unknown,
+  ): CommandOutcome {
+    const timedOut = err instanceof PhaseTimeoutError;
+    const label = phase === "execute" ? "EXECUTION" : "PREPARE";
+    const code = timedOut ? `${label}_TIMEOUT` : `${label}_ERROR`;
+    this.lifecycle.transition(executionId, "PARTIAL", { errorCode: code });
+    this.auditVerification(actor, executionId, command, code, phase);
+    const message = timedOut
+      ? `${phase} timed out; external outcome is uncertain and unresolved`
+      : `${phase} failed`;
+    return this.outcome(executionId, command, riskClass, capabilityId, passport, paramsHash, "PARTIAL", message, code);
+  }
+
+  /** Append a verification/timeout audit event (stable code, no secrets). */
+  private auditVerification(
+    actor: { userId: string; workspaceId: string },
+    executionId: string,
+    command: CommandDefinition,
+    code: string,
+    phase: string,
+  ): void {
+    this.audit.append({
+      workspaceId: actor.workspaceId,
+      actorId: actor.userId,
+      actorType: "USER",
+      eventType: "COMMAND_VERIFICATION",
+      targetType: "execution",
+      targetId: executionId,
+      result: "FAILURE",
+      metadata: { commandId: command.commandId, code, phase },
+    });
   }
 
   /* ---------------- Helpers ---------------- */
@@ -492,6 +658,23 @@ export class CommandGateway {
         return this.conflict(actor, request, command, capabilityId, paramsHash, e);
       }
       throw e;
+    }
+    // Idempotent replay of an already-blocked execution: do not attempt the
+    // invalid BLOCKED -> BLOCKED transition; return the stored outcome.
+    if (execution.status === "BLOCKED") {
+      return {
+        executionId: execution.id,
+        commandId,
+        commandVersion,
+        status: "BLOCKED",
+        riskClass: command ? this.resolveRisk(command) : "R2",
+        capabilityId,
+        passportId: null,
+        passportStatus: null,
+        paramsHash,
+        errorCode: execution.error_code ?? code,
+        message: "Idempotent replay of a blocked execution",
+      };
     }
     this.lifecycle.transition(execution.id, "BLOCKED", { errorCode: code });
     this.audit.append({
@@ -590,7 +773,18 @@ export class CommandGateway {
   }
   /** Build an outcome from an existing (idempotent) execution record. */
   private outcomeFromRecord(
-    record: { id: string; status: ExecutionState; command_id: string; command_version: string; capability_id: string | null; passport_id: string | null; params_hash: string },
+    record: {
+      id: string;
+      status: ExecutionState;
+      command_id: string;
+      command_version: string;
+      capability_id: string | null;
+      passport_id: string | null;
+      params_hash: string;
+      result: string | null;
+      evidence: string | null;
+      error_code: string | null;
+    },
     command: CommandDefinition,
     riskClass: RiskClass,
     capabilityId: string | null,
@@ -606,13 +800,52 @@ export class CommandGateway {
       passportId: record.passport_id ?? null,
       passportStatus: null,
       paramsHash: record.params_hash || paramsHash,
+      result: record.result ? safeJsonParse(record.result) : undefined,
+      evidence: record.evidence ? safeJsonParse(record.evidence) : undefined,
+      errorCode: record.error_code ?? undefined,
       message: "Idempotent replay of a completed execution",
     };
   }
 }
 
 function isTerminalState(state: ExecutionState): boolean {
-  return state === "VERIFIED" || state === "FAILED" || state === "CANCELLED" || state === "COMPENSATED";
+  // PARTIAL is a completed (unresolved) outcome: a replay must never
+  // re-execute or re-verify it.
+  return state === "VERIFIED" || state === "PARTIAL" || state === "FAILED" || state === "CANCELLED" || state === "COMPENSATED";
+}
+
+/** True when a value is a finite number strictly greater than zero. */
+function isPositiveNumber(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n > 0;
+}
+
+/** True when a value is a non-null, non-array object. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Verification evidence must be a non-empty, serialisable object. Malformed,
+ * non-serialisable or empty evidence is rejected as proof of a verified outcome
+ * (an adapter returning `verified: true` with empty evidence is NOT VERIFIED).
+ */
+function isValidVerificationEvidence(value: unknown): value is Record<string, unknown> {
+  if (!isPlainObject(value)) return false;
+  if (Object.keys(value).length === 0) return false;
+  try {
+    canonicalize(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }
 
 function summariseCommand(c: CommandDefinition) {

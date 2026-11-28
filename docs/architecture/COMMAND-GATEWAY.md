@@ -39,8 +39,8 @@ The full pipeline:
 9. Create Action Passport                 (ActionPassportService.createRequest)
 10. Create lifecycle record              (ExecutionLifecycleManager)
 11. Approval gate                        (ApprovalService)              AWAITING_APPROVAL
-12. Execute via adapter                   (ExecutionAdapter)
-13. Verify                               (verificationContract)         VERIFIED/PARTIAL
+12. Execute via adapter                  (ExecutionAdapter)             PREPARE → EXECUTE (bounded)
+13. Verify                               (adapter.verify(), authoritative) VERIFIED/PARTIAL
 14. Audit                               (AuditService)
 ```
 
@@ -59,6 +59,70 @@ gate passes.
 | `CAPABILITY_ESCALATION` | Capability scope would exceed caller permissions. |
 | `PERMISSION_DENIED` | Caller lacks a required permission. |
 | `IDEMPOTENCY_CONFLICT` | Idempotency key reused for a different canonical request (command, args, capability, target, version or execution options). The prior execution/passport is never returned. |
+
+## Verification (adapter-authoritative)
+
+For adapter-backed commands the gateway invokes the registered adapter's
+`verify()` after a successful `execute()` and uses **`AdapterVerification.verified`
+as the verification decision**. `Boolean(result.evidence)` is never used as a
+substitute: an adapter returning `{ success: true, evidence: {...} }` is not
+enough to establish verification.
+
+- **Execution evidence vs verification evidence.** `result.output` is the
+  adapter's ordinary execution output; `AdapterVerification.evidence` is the
+  verification evidence. They are persisted in distinct columns
+  (`command_executions.result` and `command_executions.evidence`) so a user can
+  inspect what the adapter returned separately from what verified it.
+- **When `VERIFIED` may be reported.** Only when `verify()` resolves with
+  `verified: true` **and** the evidence is a non-empty, serialisable object.
+  Malformed, non-serialisable or empty evidence is rejected as proof of a
+  verified outcome (`VERIFICATION_EVIDENCE_INVALID`).
+- **Unsupported verification.** If the command's `verificationContract` requires
+  automatic verification (any type other than `manual`, or `independentCheck`)
+  and the adapter declares `supportsVerification: false`, the gateway fails
+  closed **before execution** (`VERIFICATION_UNSUPPORTED`). A `manual` contract
+  is never silently promoted to an automatic `VERIFIED`; it resolves to an
+  honest `PARTIAL` (`VERIFICATION_MANUAL_REQUIRED`).
+- **Verification failures.** `verify()` returning `verified: false` → `PARTIAL`
+  (`VERIFICATION_FAILED`); `verify()` throwing or not completing → `PARTIAL`
+  (`VERIFICATION_ERROR`). A verification decision that disagrees with execution
+  evidence always wins.
+
+## Timeouts and uncertain side effects
+
+The gateway enforces a server-side bounded execution using the stricter valid
+limit `effective timeout = min(command.timeoutPolicy.maxSeconds,
+adapter.timeoutSeconds)`, applied to **prepare**, **execute** and **verify**.
+Timeout values are validated before use (a non-positive value fails closed with
+`TIMEOUT_INVALID`). Each phase receives a cooperative `AbortSignal`; a
+cooperative adapter should observe it and stop, but the gateway never assumes
+the adapter stopped merely because the phase timed out.
+
+- A prepare timeout prevents execution from beginning (`PREPARE_TIMEOUT`).
+- An execution timeout with an uncertain external side effect produces an honest
+  **unresolved** `PARTIAL` (`EXECUTION_TIMEOUT`), never a claim that the
+  operation definitely did not happen, and never a false success.
+- A verification timeout never yields `VERIFIED` (`VERIFICATION_TIMEOUT`).
+- Timers and abort listeners are cleaned up on every completion, failure and
+  timeout path. No operation whose external outcome is uncertain is automatically
+  retried.
+
+## Compensation boundary
+
+The adapter interface declares `compensate()`, but this milestone does **not**
+invent rollback behaviour and the gateway never invokes compensation as a
+shortcut around the passport or lifecycle. No operation is reported as rolled
+back unless a separately authorised and verified compensation operation actually
+occurred. `COMPENSATION_PENDING` / `COMPENSATED` semantics are preserved;
+automatic compensation is recorded as future work requiring its own governed
+design.
+
+## Live-integration status
+
+This milestone hardens the execution boundary but does **not** establish live
+integration availability. No real external connector is connected or accepted;
+verification and timeout behaviour is exercised with deterministic test adapters
+only.
 
 ## CommandOutcome
 
