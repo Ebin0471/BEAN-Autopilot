@@ -57,13 +57,29 @@ record unchanged — a record cannot jump from `RECEIVED` to `RUNNING`, re-enter
 
 ## Adapter interface
 
-`ExecutionAdapter` (`lib/commands/adapter.ts`) is the pluggable execution
+`CommandAdapter` (`lib/commands/adapter.ts`) is the pluggable execution
 boundary. An adapter declares `adapterId`, `supportedCommands`,
-`requiredPermissions`, and implements `execute(request, context)` and
-`cancel(executionId)`.
+`requiredPermissions`, `timeoutSeconds`, `supportsVerification` and
+`supportsCompensation`, and implements `prepare`, `execute`, `verify`,
+`compensate` and `healthCheck`.
 
-- CORE-02 ships a **test-only** `TestCommandAdapter`; no real connector
-  adapters exist this milestone.
+- **Verification is authoritative.** After a successful `execute()`, the gateway
+  calls `adapter.verify(ctx, result)` and reports `VERIFIED` only when
+  `AdapterVerification.verified` is true **and** the evidence is a non-empty,
+  serialisable object. Execution output (`result.output`) and verification
+  evidence (`AdapterVerification.evidence`) are persisted in distinct columns.
+  An adapter that cannot provide a required verification method fails closed
+  before execution; a `manual` contract is never auto-verified.
+- **Bounded phases.** `prepare`, `execute` and `verify` are each bounded by
+  `effective timeout = min(command.timeoutPolicy.maxSeconds,
+  adapter.timeoutSeconds)` and receive a cooperative `AbortSignal`. A timeout
+  yields an honest unresolved `PARTIAL` (never a false success); verification
+  timeouts never yield `VERIFIED`.
+- **Compensation.** `compensate()` is declared but not invoked by the gateway
+  this milestone; automatic compensation/rollback is future work and is never
+  claimed unless a separately authorised, verified compensation occurs.
+- CORE-02/CORE-04A ship a **test-only** `TestCommandAdapter`; no real connector
+  adapters exist this milestone and no live integration is accepted.
 - The adapter is chosen **server-side** by the gateway/lifecycle manager. The
   client never selects or names an adapter.
 
