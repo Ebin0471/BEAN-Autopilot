@@ -120,8 +120,16 @@ export function setConsent(
  * Assert that a workspace may use the given provider privacy class.
  *
  * - INTERNAL / LOCAL: always permitted (no external-AI consent needed).
- * - EXTERNAL: requires workspace consent, AND the provider id (when known)
- *   must be in the allowed list. Fails closed on any gap.
+ * - EXTERNAL: requires workspace consent AND an explicit, non-empty provider
+ *   allowlist that contains the requested provider. Fails closed on every gap:
+ *
+ *   - externalAiAllowed === false            → deny all (CONSENT_REQUIRED)
+ *   - externalAiAllowed === true, empty list  → deny all (PROVIDER_NOT_ALLOWED)
+ *   - externalAiAllowed === true, non-empty   → permit only listed providers
+ *   - provider id missing / unknown           → deny (PROVIDER_NOT_ALLOWED)
+ *
+ * An empty allowlist never permits anything: "allow external AI" without an
+ * explicit provider list is treated as no consent at all.
  */
 export function assertProviderAllowed(
   db: Db,
@@ -142,21 +150,35 @@ export function assertProviderAllowed(
     );
   }
 
-  if (providerId && consent.allowedExternalProviderIds.length > 0) {
-    if (!consent.allowedExternalProviderIds.includes(providerId)) {
-      throw new ConsentError(
-        `Provider "${providerId}" is not in the workspace's allowed external-AI provider list.`,
-        "PROVIDER_NOT_ALLOWED",
-      );
-    }
+  // externalAiAllowed === true: an empty allowlist permits NO provider.
+  if (consent.allowedExternalProviderIds.length === 0) {
+    throw new ConsentError(
+      `Workspace ${workspaceId} has external AI enabled but no providers are allowlisted.`,
+      "PROVIDER_NOT_ALLOWED",
+    );
+  }
+
+  // The provider id must be present and explicitly allowlisted.
+  if (!providerId || !consent.allowedExternalProviderIds.includes(providerId)) {
+    throw new ConsentError(
+      `Provider "${providerId ?? "(unknown)"}" is not in the workspace's allowed external-AI provider list.`,
+      "PROVIDER_NOT_ALLOWED",
+    );
   }
 
   return consent;
 }
 
-/** Whether a workspace currently has external-AI consent. */
+/**
+ * Whether a workspace can actually use external AI right now.
+ *
+ * Mirrors assertProviderAllowed: external AI is only usable when consent is
+ * granted AND at least one provider is explicitly allowlisted. An empty
+ * allowlist means external AI is not usable, even if externalAiAllowed is true.
+ */
 export function hasExternalAiConsent(db: Db, workspaceId: string): boolean {
-  return getConsent(db, workspaceId).externalAiAllowed;
+  const consent = getConsent(db, workspaceId);
+  return consent.externalAiAllowed && consent.allowedExternalProviderIds.length > 0;
 }
 
 function parseProviderList(raw: unknown): string[] {

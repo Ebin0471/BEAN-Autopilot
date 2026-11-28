@@ -61,41 +61,160 @@ const METADATA_HOSTS = new Set([
 
 const METADATA_HOST_SUFFIXES = [".internal", ".metadata", ".localhost.localdomain"];
 
+/** Normalise an IP string: strip surrounding brackets and lowercase. */
+function normalizeIp(ip: string): string {
+  return ip.toLowerCase().replace(/^\[|\]$/g, "");
+}
+
+/** Parse an IPv4 dotted-quad into octets, or null when invalid. */
+function parseIpv4(s: string): [number, number, number, number] | null {
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return null;
+  const octets: [number, number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  if (octets.some((o) => o > 255)) return null;
+  return octets;
+}
+
 /**
- * Classify an IP address (IPv4 or IPv6, no brackets) as blocked.
+ * Parse an IPv6 address into 8 16-bit groups, or null when invalid.
+ * Handles `::` compression and an embedded IPv4 dotted-quad at the end
+ * (e.g. `::ffff:1.2.3.4` or `2001:db8::1.2.3.4`). The embedded IPv4 becomes
+ * the final two groups so IPv4-mapped addresses are classified canonically.
+ */
+function parseIpv6(s: string): number[] | null {
+  let str = s;
+  let embeddedV4: [number, number, number, number] | null = null;
+  const lastDot = s.lastIndexOf(".");
+  if (lastDot !== -1) {
+    const colon = s.lastIndexOf(":", lastDot - 1);
+    if (colon === -1) return null;
+    const v4 = parseIpv4(s.slice(colon + 1));
+    if (!v4) return null;
+    embeddedV4 = v4;
+    str = s.slice(0, colon);
+  }
+
+  const parseGroups = (part: string): number[] | null => {
+    if (part === "") return [];
+    const out: number[] = [];
+    for (const p of part.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/i.test(p)) return null;
+      out.push(parseInt(p, 16));
+    }
+    return out;
+  };
+
+  const dbl = str.indexOf("::");
+  let groups: number[];
+  if (dbl !== -1) {
+    if (str.indexOf("::", dbl + 1) !== -1) return null;
+    const lhs = parseGroups(str.slice(0, dbl));
+    const rhs = parseGroups(str.slice(dbl + 2));
+    if (!lhs || !rhs) return null;
+    const missing = 8 - lhs.length - rhs.length - (embeddedV4 ? 2 : 0);
+    if (missing < 0) return null;
+    groups = [...lhs, ...new Array<number>(missing).fill(0), ...rhs];
+  } else {
+    const all = parseGroups(str);
+    if (!all) return null;
+    groups = all;
+  }
+
+  if (embeddedV4) {
+    const [a, b, c, d] = embeddedV4;
+    groups.push(((a << 8) | b) >>> 0, ((c << 8) | d) >>> 0);
+  }
+  if (groups.length !== 8) return null;
+  return groups;
+}
+
+/** A canonically parsed IP address. */
+export type ParsedIp =
+  | { kind: "v4"; octets: [number, number, number, number] }
+  | { kind: "v6"; groups: number[] };
+
+/**
+ * Canonical IP parser. Returns null when the value is not a valid IPv4 or
+ * IPv6 literal. IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is parsed into its 8 IPv6
+ * groups so it can be classified by its embedded IPv4.
+ */
+export function parseIp(value: string): ParsedIp | null {
+  const h = normalizeIp(value);
+  if (h.includes(":")) {
+    const groups = parseIpv6(h);
+    if (groups) return { kind: "v6", groups };
+    return null;
+  }
+  const octets = parseIpv4(h);
+  if (octets) return { kind: "v4", octets };
+  return null;
+}
+
+/** Classify an IPv4 octet set as blocked (metadata is unconditional). */
+function isBlockedIpv4(
+  octets: [number, number, number, number],
+  allowLocal: boolean,
+): boolean {
+  const [a, b] = octets;
+  // Metadata IPs: unconditional.
+  if (METADATA_IPS.has(octets.join("."))) return true;
+  if (a === 127) return allowLocal ? false : true; // loopback
+  if (a === 10) return allowLocal ? false : true; // private
+  if (a === 172 && b >= 16 && b <= 31) return allowLocal ? false : true; // private
+  if (a === 192 && b === 168) return allowLocal ? false : true; // private
+  if (a === 169 && b === 254) return allowLocal ? false : true; // link-local
+  if (a === 0) return true; // "this host" always blocked
+  if (a >= 224) return true; // multicast / reserved always blocked
+  return false;
+}
+
+/**
+ * Classify an IP address (IPv4 or IPv6, no brackets) as blocked using
+ * CANONICAL PARSING — no string-prefix checks that can be bypassed through
+ * alternate IP notation. IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are
+ * classified by their embedded IPv4.
  *
- * Metadata IPs are blocked UNCONDITIONALLY. Loopback / private / link-local /
- * multicast / reserved ranges are blocked unless `allowLocal` is true (the
- * explicit local-development opt-in).
+ * Metadata IPs are blocked UNCONDITIONALLY (even with local endpoints enabled).
+ * Loopback / private / link-local / multicast / reserved ranges are blocked
+ * unless `allowLocal` is true (the explicit local-development opt-in).
  */
 export function isBlockedIp(ip: string, allowLocal: boolean): boolean {
-  const h = ip.toLowerCase().replace(/^\[|\]$/g, "");
+  const parsed = parseIp(ip);
+  if (!parsed) return false;
 
-  // IPv6 loopback / link-local / unique-local / multicast.
-  if (h === "::1" || h === "::" || h.startsWith("ff")) {
-    return true; // loopback + multicast always blocked
+  if (parsed.kind === "v4") {
+    return isBlockedIpv4(parsed.octets, allowLocal);
   }
-  if (h.startsWith("fe80:")) return allowLocal ? false : true; // link-local
-  if (h.startsWith("fc") || h.startsWith("fd")) return allowLocal ? false : true; // ULA
 
-  // IPv4.
-  const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-    // Metadata IPs: unconditional.
-    if (METADATA_IPS.has(h)) return true;
-    if (a === 127) return allowLocal ? false : true; // loopback
-    if (a === 10) return allowLocal ? false : true; // private
-    if (a === 172 && b >= 16 && b <= 31) return allowLocal ? false : true; // private
-    if (a === 192 && b === 168) return allowLocal ? false : true; // private
-    if (a === 169 && b === 254) return allowLocal ? false : true; // link-local
-    if (a === 0) return true; // "this host" always blocked
-    if (a >= 224) return true; // multicast / reserved always blocked
-    return false;
+  const g = parsed.groups;
+  // Unspecified (::) — always blocked.
+  if (g.every((x) => x === 0)) return true;
+  // Loopback (::1) — always blocked.
+  if (g[7] === 1 && g.slice(0, 7).every((x) => x === 0)) return true;
+  // Multicast (ff00::/8) — always blocked.
+  if ((g[0] & 0xff00) === 0xff00) return true;
+  // Link-local (fe80::/10).
+  if ((g[0] & 0xffc0) === 0xfe80) return allowLocal ? false : true;
+  // Unique-local (fc00::/7).
+  if ((g[0] & 0xfe00) === 0xfc00) return allowLocal ? false : true;
+  // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d):
+  // the first five groups are zero; classify by the embedded IPv4.
+  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0) {
+    if (g[5] === 0xffff || g[5] === 0) {
+      const a = g[6] >> 8;
+      const b = g[6] & 0xff;
+      const c = g[7] >> 8;
+      const d = g[7] & 0xff;
+      return isBlockedIpv4([a, b, c, d], allowLocal);
+    }
   }
   return false;
 }
 
+/** True when a string is a valid IPv4 or IPv6 literal (no DNS lookup needed). */
+export function isIpLiteral(value: string): boolean {
+  return parseIp(value) !== null;
+}
 /** True when a hostname is a cloud-metadata host (unconditional block). */
 export function isMetadataHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -110,7 +229,8 @@ export function isMetadataHost(hostname: string): boolean {
  * Validate a hostname (pre-DNS): reject metadata hostnames unconditionally,
  * and reject loopback/private hosts (by name or IP literal) unless local
  * endpoints are allowed. IP literals are validated here so a base URL that
- * carries a private/loopback IP is blocked before any DNS lookup.
+ * carries a private/loopback IP (including IPv4-mapped IPv6) is blocked before
+ * any DNS lookup.
  */
 export function isBlockedHostname(hostname: string, allowLocal: boolean): boolean {
   if (isMetadataHost(hostname)) return true; // unconditional
@@ -120,16 +240,6 @@ export function isBlockedHostname(hostname: string, allowLocal: boolean): boolea
   // IP literal in the hostname: apply IP-level classification.
   if (isIpLiteral(h)) return isBlockedIp(h, allowLocal);
   return false;
-}
-
-/** True when a string is an IPv4 or IPv6 literal (no DNS lookup needed). */
-export function isIpLiteral(value: string): boolean {
-  const h = value.toLowerCase().replace(/^\[|\]$/g, "");
-  if (h.includes(":")) {
-    // IPv6 literal (contains at least one colon and is hex/colon).
-    return /^[0-9a-f:]+$/.test(h) && h.includes(":");
-  }
-  return /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(h);
 }
 
 /**

@@ -58,6 +58,8 @@ export interface HttpResponse<T> {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** Max ms to wait between stream chunks before aborting (idle timeout). */
+const STREAM_IDLE_TIMEOUT_MS = 60_000;
 
 /** Resolve a request URL to a pinned, validated destination. */
 async function resolvePinnedDestination(
@@ -245,6 +247,22 @@ export async function httpRequest<T = unknown>(
  * the streaming adapters. Throws a typed error for non-2xx responses. The
  * socket is pinned to a DNS-resolved, validated IP (DNS-rebinding protection).
  */
+/**
+ * Consume an SSE response body as an async iterable of text chunks. Used by
+ * the streaming adapters. Throws a typed error for non-2xx responses. The
+ * socket is pinned to a DNS-resolved, validated IP (DNS-rebinding protection).
+ *
+ * Timeout model:
+ *  - the initial-request timeout bounds getting the response headers;
+ *  - an IDLE timeout bounds the wait between stream chunks, so a provider that
+ *    stops sending data cannot hold the stream open indefinitely;
+ *  - the caller AbortSignal aborts the request and destroys the upstream
+ *    response; timers and abort listeners are cleaned up on every termination
+ *    path (stream end, error, idle timeout, client cancel, early iterator
+ *    return);
+ *  - a timeout is classified distinctly from client cancellation (TIMEOUT vs
+ *    ABORTED).
+ */
 export async function httpSSEStream(
   url: string,
   options: {
@@ -253,24 +271,29 @@ export async function httpSSEStream(
     body: unknown;
     signal?: AbortSignal;
     timeoutMs?: number;
+    /** Max ms to wait between stream chunks before aborting (idle timeout). */
+    idleTimeoutMs?: number;
   },
 ): Promise<AsyncIterable<Uint8Array>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
   const controller = new AbortController();
   const timeoutTimer = setTimeout(() => controller.abort(), timeoutMs);
+  let callerAbortListener: (() => void) | null = null;
   if (options.signal) {
     if (options.signal.aborted) {
       clearTimeout(timeoutTimer);
       throw new ProviderHTTPError("Request was aborted.", "ABORTED", null);
     }
-    options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    callerAbortListener = () => controller.abort();
+    options.signal.addEventListener("abort", callerAbortListener, { once: true });
   }
 
   let destination: PinnedDestination;
   try {
     destination = await resolvePinnedDestination(url);
   } catch (e) {
-    clearTimeout(timeoutTimer);
+    cleanup();
     if (e instanceof EndpointSafetyError) {
       throw new ProviderHTTPError(e.message, e.code, null);
     }
@@ -284,6 +307,21 @@ export async function httpSSEStream(
   const parsed = new URL(url);
   const lib = destination.secure ? https : http;
   const reqPath = parsed.pathname + parsed.search;
+
+  // Idle timer is created once the response stream begins.
+  let idleTimer: NodeJS.Timeout | null = null;
+
+  function cleanup() {
+    clearTimeout(timeoutTimer);
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+    if (callerAbortListener && options.signal) {
+      options.signal.removeEventListener("abort", callerAbortListener);
+    }
+    callerAbortListener = null;
+  }
 
   return new Promise<AsyncIterable<Uint8Array>>((resolve, reject) => {
     const req = lib.request(
@@ -303,49 +341,97 @@ export async function httpSSEStream(
         signal: controller.signal,
       },
       (res) => {
-        // The timeout bounds only the initial request (getting the response).
-        // The stream itself is bounded by the caller's AbortSignal and the
-        // SSE parser's max-size limit, so we release the timer here.
+        // The initial-request timeout is released once headers arrive; an
+        // idle timeout now bounds the stream.
         clearTimeout(timeoutTimer);
+
+        let streamEnded = false;
+        const failStream = (err: ProviderHTTPError) => {
+          if (streamEnded) return;
+          streamEnded = true;
+          // Reject any pending iterator next() so a consumer awaiting data
+          // wakes with the error instead of hanging on a stalled stream.
+          const r = pushReject;
+          pushReject = null;
+          r?.(err);
+          cleanup();
+          reject(err);
+        };
+
+        const resetIdle = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            // Idle timeout: abort the request and reject as TIMEOUT (distinct
+            // from client cancellation).
+            try {
+              controller.abort();
+            } catch {
+              /* ignore */
+            }
+            failStream(
+              new ProviderHTTPError(
+                `Stream idle for ${idleTimeoutMs}ms with no data.`,
+                "TIMEOUT",
+                null,
+              ),
+            );
+          }, idleTimeoutMs);
+        };
 
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
           const chunks: Buffer[] = [];
           res.on("data", (c: Buffer) => chunks.push(c));
           res.on("end", () => {
             const text = Buffer.concat(chunks).toString("utf8");
-            reject(toProviderError(res.statusCode ?? 0, text, retryAfterMsFromHeaders(res.headers)));
+            failStream(toProviderError(res.statusCode ?? 0, text, retryAfterMsFromHeaders(res.headers)));
           });
           res.on("error", () => {
-            reject(new ProviderHTTPError("Upstream stream error.", "UPSTREAM_ERROR", res.statusCode ?? null));
+            failStream(new ProviderHTTPError("Upstream stream error.", "UPSTREAM_ERROR", res.statusCode ?? null));
           });
           return;
         }
 
-        // Wrap the response stream in an async iterable. We push raw chunks
-        // and stop the stream when the consumer finishes or aborts.
+        // Wrap the response stream in an async iterable with idle-timeout
+        // bounds. Chunks are queued; the iterator awaits data and the idle
+        // timer bounds how long that wait may be.
         const queue: Uint8Array[] = [];
         let pushResolve: (() => void) | null = null;
         let pushReject: ((e: Error) => void) | null = null;
-        let finished = false;
 
         res.on("data", (c: Buffer) => {
+          resetIdle();
           queue.push(c);
           const r = pushResolve;
           pushResolve = null;
           r?.();
         });
         res.on("error", (err) => {
-          finished = true;
-          const r = pushReject;
-          pushReject = null;
-          r?.(err instanceof Error ? err : new Error("Stream error."));
+          if (streamEnded) return;
+          // Classify: a client abort is distinct from an upstream stream
+          // error; wrap so consumers always receive a ProviderHTTPError.
+          if (options.signal?.aborted) {
+            failStream(new ProviderHTTPError("Request was aborted by the client.", "ABORTED", null));
+          } else {
+            failStream(
+              new ProviderHTTPError(
+                err instanceof Error ? err.message : "Upstream stream error.",
+                "UPSTREAM_ERROR",
+                res.statusCode ?? null,
+              ),
+            );
+          }
         });
         res.on("close", () => {
-          finished = true;
+          if (streamEnded) return;
+          // Mark the stream ended so any subsequent iterator next() returns
+          // done instead of awaiting forever, and wake a pending next().
+          streamEnded = true;
+          cleanup();
           const r = pushResolve;
           pushResolve = null;
           r?.();
         });
+        resetIdle();
 
         const iterable: AsyncIterable<Uint8Array> = {
           [Symbol.asyncIterator]() {
@@ -356,7 +442,7 @@ export async function httpSSEStream(
                 if (queue.length > 0) {
                   return { value: queue.shift() as Uint8Array, done: false };
                 }
-                if (finished) return { value: undefined, done: true };
+                if (streamEnded) return { value: undefined, done: true };
                 await new Promise<void>((res2, rej2) => {
                   pushResolve = () => res2();
                   pushReject = (e) => rej2(e);
@@ -369,8 +455,14 @@ export async function httpSSEStream(
               },
               async return(): Promise<IteratorResult<Uint8Array>> {
                 done = true;
+                cleanup();
                 try {
                   res.destroy();
+                } catch {
+                  /* ignore */
+                }
+                try {
+                  controller.abort();
                 } catch {
                   /* ignore */
                 }
@@ -384,10 +476,17 @@ export async function httpSSEStream(
     );
 
     req.on("error", (err) => {
-      clearTimeout(timeoutTimer);
       if (err instanceof Error && err.name === "AbortError") {
-        reject(new ProviderHTTPError("Request timed out or was aborted.", "TIMEOUT", null));
+        // Distinguish caller cancellation from idle/initial-request timeout.
+        if (options.signal?.aborted) {
+          cleanup();
+          reject(new ProviderHTTPError("Request was aborted by the client.", "ABORTED", null));
+        } else {
+          cleanup();
+          reject(new ProviderHTTPError(`Request timed out after ${timeoutMs}ms.`, "TIMEOUT", null));
+        }
       } else {
+        cleanup();
         reject(
           new ProviderHTTPError(
             err instanceof Error ? err.message : "Network request failed.",
